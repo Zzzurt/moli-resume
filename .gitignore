@@ -1,0 +1,20 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+*.log
+.vite
+
+# 隐私 / 非必要内容
+.workbuddy/
+magic-resume.tar.gz
+vite.config.ts.timestamp-*.mjs
+
+# 测试产物
+gui-test-screenshots/
+scripts/shots/
+scripts/shots2/
+scripts/shots_font_old/
+scripts/*.pdf
+scripts/diag_default.md

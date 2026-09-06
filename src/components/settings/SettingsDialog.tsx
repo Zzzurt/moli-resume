@@ -1,0 +1,229 @@
+import { useState } from 'react'
+import {
+  Bot,
+  Database,
+  Download,
+  Upload,
+  Eye,
+  EyeOff,
+  PlugZap,
+  Loader2,
+  Check,
+} from 'lucide-react'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { useSettings } from '@/hooks/useSettings'
+import { chatCompletion, aiErrorMessage } from '@/lib/aiService'
+import { exportBackup, importBackup, type BackupFile } from '@/lib/db'
+import { downloadFile, parseJson, pickTextFile } from '@/lib/fileIO'
+import { toast } from 'sonner'
+
+interface SettingsDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+  const { settings, update } = useSettings()
+  const [showKey, setShowKey] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testOk, setTestOk] = useState(false)
+  /** 待确认恢复的备份文件（弹窗确认后写入） */
+  const [pendingBackup, setPendingBackup] = useState<BackupFile | null>(null)
+
+  const config = {
+    baseUrl: settings.aiBaseUrl,
+    apiKey: settings.aiApiKey,
+    model: settings.aiModel,
+  }
+
+  const testConnection = async () => {
+    setTesting(true)
+    setTestOk(false)
+    try {
+      await chatCompletion(
+        config,
+        [{ role: 'user', content: 'ping' }],
+        { temperature: 0, firstByteMs: 15_000 }
+      )
+      setTestOk(true)
+      toast.success('连接成功，模型可用')
+    } catch (e) {
+      toast.error(aiErrorMessage(e))
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleExportBackup = async () => {
+    const backup = await exportBackup()
+    downloadFile(
+      JSON.stringify(backup, null, 2),
+      `ink-resume-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      'application/json'
+    )
+    toast.success('备份已导出（不含 API Key）')
+  }
+
+  const handleImportBackup = async () => {
+    const picked = await pickTextFile('.json,application/json')
+    if (!picked) return
+    const data = parseJson<BackupFile>(picked.text)
+    if (!data || data.app !== 'ink-resume' || !Array.isArray(data.resumes)) {
+      toast.error('不是有效的墨历备份文件')
+      return
+    }
+    setPendingBackup(data)
+  }
+
+  const confirmImportBackup = async () => {
+    const data = pendingBackup
+    setPendingBackup(null)
+    if (!data) return
+    try {
+      await importBackup(data)
+      toast.success('数据已恢复，即将刷新页面')
+      window.setTimeout(() => window.location.reload(), 800)
+    } catch (e) {
+      toast.error(`恢复失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>设置</DialogTitle>
+          <DialogDescription>AI 模型接入与本地数据管理，全部数据仅存于本浏览器。</DialogDescription>
+        </DialogHeader>
+
+        {/* AI 接入 */}
+        <section className="space-y-3">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+            <Bot className="size-4 text-primary" /> AI 模型
+          </h3>
+          <div className="space-y-1.5">
+            <Label htmlFor="ai-base-url" className="text-xs">
+              Base URL（OpenAI 兼容格式）
+            </Label>
+            <Input
+              id="ai-base-url"
+              value={settings.aiBaseUrl}
+              onChange={(e) => update('aiBaseUrl', e.target.value)}
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ai-api-key" className="text-xs">
+              API Key
+            </Label>
+            <div className="relative">
+              <Input
+                id="ai-api-key"
+                type={showKey ? 'text' : 'password'}
+                value={settings.aiApiKey}
+                onChange={(e) => {
+                  update('aiApiKey', e.target.value)
+                  setTestOk(false)
+                }}
+                placeholder="sk-…（仅保存在本机 IndexedDB）"
+                className="h-8 pr-9 font-mono text-xs"
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="ai-model" className="text-xs">
+              模型
+            </Label>
+            <Input
+              id="ai-model"
+              value={settings.aiModel}
+              onChange={(e) => update('aiModel', e.target.value)}
+              placeholder="qwen-plus"
+              className="h-8 font-mono text-xs"
+            />
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs"
+            disabled={testing}
+            onClick={() => void testConnection()}
+          >
+            {testing ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : testOk ? (
+              <Check className="size-3.5 text-primary" />
+            ) : (
+              <PlugZap className="size-3.5" />
+            )}
+            测试连接
+          </Button>
+        </section>
+
+        <Separator />
+
+        {/* 数据备份 */}
+        <section className="space-y-3">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+            <Database className="size-4 text-primary" /> 数据备份
+          </h3>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            将全部简历与设置导出为一个 JSON 文件（不含 API Key），或从备份文件恢复（覆盖当前数据，
+            本机 API Key 保留）。
+          </p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => void handleExportBackup()}
+            >
+              <Download className="size-3.5" /> 导出 JSON
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 text-xs"
+              onClick={() => void handleImportBackup()}
+            >
+              <Upload className="size-3.5" /> 导入恢复
+            </Button>
+          </div>
+        </section>
+      </DialogContent>
+      </Dialog>
+
+      {/* 恢复备份确认弹窗 */}
+      <ConfirmDialog
+        open={pendingBackup !== null}
+        onOpenChange={(open) => !open && setPendingBackup(null)}
+        title="恢复备份"
+        description={`将恢复 ${pendingBackup?.resumes.length ?? 0} 份简历并覆盖当前所有数据（API Key 保留本机），此操作不可撤销。确定继续吗？`}
+        confirmText="恢复"
+        destructive
+        onConfirm={() => void confirmImportBackup()}
+      />
+    </>
+  )
+}
