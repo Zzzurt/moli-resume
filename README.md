@@ -10,12 +10,6 @@
 
 ## 快速开始
 
-### Windows 一键启动
-
-双击根目录的 **`启动墨历.bat`** 即可：自动定位 Node → 首次运行自动安装依赖 → 启动本地服务 → 打开浏览器。关闭弹出的「墨历服务」命令行窗口即停止服务。
-
-### 命令行方式
-
 ```bash
 npm install        # 安装依赖
 npm run dev        # 启动开发服务（http://localhost:5173）
@@ -88,7 +82,6 @@ npm run typecheck  # TypeScript 类型检查
 ## 目录结构
 
 ```
-├── 启动墨历.bat               # Windows 一键启动脚本
 ├── index.html
 ├── scripts/
 │   ├── pdf_test.cjs             # PDF 导出 e2e 验证脚本（Playwright）
@@ -134,7 +127,6 @@ npm run typecheck  # TypeScript 类型检查
 
 ## 开发
 
-- 迭代历史与问题修复记录见 [开发日志.md](./开发日志.md)
 - 类型检查：`npm run typecheck`
 - PDF 导出 e2e：`node scripts/pdf_test.cjs`（需先启动 dev server 与 Playwright Chromium）
 - 冒烟测试：`node scripts/smoke.cjs`（同理，需 Playwright）

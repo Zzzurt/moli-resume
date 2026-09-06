@@ -11,6 +11,12 @@ dist-ssr
 magic-resume.tar.gz
 vite.config.ts.timestamp-*.mjs
 
+# 本地开发文档与启动脚本（仅本机使用，不入库）
+HANDOFF.md
+启动墨历.bat
+开发日志.md
+模板推荐模块调研.md
+
 # 测试产物
 gui-test-screenshots/
 scripts/shots/
