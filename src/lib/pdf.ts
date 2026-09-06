@@ -47,12 +47,15 @@ export async function exportPaperToPdf(paperEl: HTMLElement, filename: string): 
   const canvas = await capturePaper(paperEl)
 
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
-  // 一页 A4 对应的 canvas 像素高度
-  const pageHpx = Math.floor((canvas.width * A4_HEIGHT_MM) / A4_WIDTH_MM)
+  // 一页 A4 对应的 canvas 像素高度（向上取整，保证单页内容完整落在第一页）
+  const pageHpx = Math.ceil((canvas.width * A4_HEIGHT_MM) / A4_WIDTH_MM)
+  // 末页仅剩几像素的舍入残差时视为空白丢弃：
+  // 否则"单页简历导出多一页空白页"——亚像素高度误差会触发一个几乎不可见的尾页
+  const eps = Math.max(4, Math.floor(pageHpx * 0.004))
 
   let rendered = 0
   let page = 0
-  while (rendered < canvas.height) {
+  while (canvas.height - rendered > eps) {
     const sliceH = Math.min(pageHpx, canvas.height - rendered)
     // 页画布固定 A4 比例，末页不足处补白
     const pageCanvas = document.createElement('canvas')

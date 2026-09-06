@@ -1,6 +1,7 @@
 /* 冒烟测试：验证本次修复的关键交互（需先启动 vite dev server）
    运行：node scripts/smoke.cjs  （BASE_URL 默认 http://localhost:5173） */
 const { chromium } = require('playwright')
+const fs = require('fs')
 
 const BASE = process.env.BASE_URL || 'http://localhost:5173'
 const results = []
@@ -11,6 +12,29 @@ const ok = (name) => {
 const fail = (name, e) => {
   results.push(`FAIL ${name}: ${e}`)
   console.error(`FAIL ${name}: ${e}`)
+}
+
+/** 直接经 IndexedDB 建简历（绕过 UI，供确定性用例使用） */
+async function idbAddResume(page, title, content, template) {
+  return page.evaluate(
+    ({ title, content, template }) =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open('ink-resume')
+        open.onerror = () => reject(new Error('open failed'))
+        open.onsuccess = () => {
+          const db = open.result
+          const tx = db.transaction('resumes', 'readwrite')
+          const req = tx.objectStore('resumes').add({
+            title, content, template,
+            createdAt: Date.now(), updatedAt: Date.now(),
+          })
+          req.onsuccess = () => resolve(req.result)
+          tx.oncomplete = () => db.close()
+          tx.onerror = () => reject(tx.error)
+        }
+      }),
+    { title, content, template }
+  )
 }
 
 async function main() {
@@ -139,6 +163,52 @@ async function main() {
     ok('png long-image export')
   } catch (e) {
     fail('png long-image export', e)
+  }
+
+  try {
+    /* 2h. AI 提问模式：发送按钮状态反馈（无指令禁用 → 输入可执行 → 无 Key 错误反馈）。
+       经悬浮工具栏「更多」行进入提问模式（选区存在时它正好浮在顶栏上方） */
+    await page.locator('.ProseMirror').click()
+    await page.keyboard.press('Control+a')
+    await page.locator('.bubble-toolbar button[title="更多工具"]').waitFor({ timeout: 5000 })
+    await page.locator('.bubble-toolbar button[title="更多工具"]').click()
+    await page.locator('.bt-ai-mini', { hasText: /提问/ }).click()
+    const dlg = page.getByRole('dialog')
+    await dlg.waitFor({ timeout: 5000 })
+    const send = page.getByTestId('ask-send')
+    await send.waitFor({ timeout: 3000 })
+    if (!(await send.isDisabled())) throw new Error('send should be disabled when instruction empty')
+    await dlg.locator('textarea').fill('翻译成英文')
+    if (await send.isDisabled()) throw new Error('send should be enabled after instruction input')
+    await send.click()
+    /* 本环境无 API Key：出现错误反馈即证明提交链路清晰可见 */
+    await page.getByText(/API Key|请先|失败|错误/).first().waitFor({ timeout: 10000 })
+    ok('ask mode send feedback')
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+  } catch (e) {
+    fail('ask mode send feedback', e)
+  }
+
+  try {
+    /* 2i. 单页简历导出 PDF 恰好一页（无空白尾页：切片舍入残差回归） */
+    const shortId = await idbAddResume(page, '页数测试', '# 单页测试\n\n一段很短的内容。', 'minimal')
+    await page.goto(`${BASE}/#/resume/${shortId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.waitForTimeout(600)
+    const [pdfDl] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.getByRole('button', { name: '导出 PDF' }).click(),
+    ])
+    const pdfPath = await pdfDl.path()
+    if (!pdfPath) throw new Error('no download path')
+    /* jsPDF 输出未压缩对象树：/Type /Page（非 /Pages）出现次数即页数 */
+    const pages = (fs.readFileSync(pdfPath).toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length
+    if (pages !== 1) throw new Error(`pdf pages=${pages}, want 1`)
+    ok('single-page pdf has no blank page')
+  } catch (e) {
+    fail('single-page pdf has no blank page', e)
   }
 
   try {

@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -196,8 +197,17 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     query: '',
   })
   const [slashActive, setSlashActive] = useState(0)
-  /** 预览点击定位 → 块闪烁高亮浮层 */
-  const [flashBox, setFlashBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  /** 预览点击定位 → 块闪烁高亮浮层（可覆盖多个连续块，如 AI 替换区域） */
+  const [flashBoxes, setFlashBoxes] = useState<
+    { x: number; y: number; w: number; h: number }[] | null
+  >(null)
+  const flashTimer = useRef<number | undefined>(undefined)
+
+  const showFlash = useCallback((boxes: { x: number; y: number; w: number; h: number }[]) => {
+    setFlashBoxes(boxes)
+    window.clearTimeout(flashTimer.current)
+    flashTimer.current = window.setTimeout(() => setFlashBoxes(null), 1700)
+  }, [])
   /** 链接编辑弹窗：null 关闭；prev 记录原 href（空串表示新建链接） */
   const [linkDraft, setLinkDraft] = useState<{ prev: string } | null>(null)
   const [linkUrl, setLinkUrl] = useState('')
@@ -457,8 +467,7 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         el.scrollIntoView({ block: 'center' })
         // 闪烁高亮：React 浮层实现，避免手动改 PM 元素 class 被 MutationObserver 重置
         const rect = el.getBoundingClientRect()
-        setFlashBox({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })
-        window.setTimeout(() => setFlashBox(null), 1700)
+        showFlash([{ x: rect.left, y: rect.top, w: rect.width, h: rect.height }])
       },
       getSelectionBlockMarkdown: () => {
         if (!editor) return null
@@ -474,12 +483,38 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
       replaceRangeMarkdown: (range: DocRange, md: string) => {
         if (!editor) return
         const nodes = markdownToDoc(md).content ?? []
+        const oldSize = editor.state.doc.content.size
         if (nodes.length === 1 && nodes[0].type === 'paragraph') {
           // 单段落：按行内内容替换，保留被替换块自身的块类型
           editor.chain().focus().insertContentAt(range, nodes[0].content ?? []).run()
         } else {
           editor.chain().focus().insertContentAt(range, nodes).run()
         }
+        /* AI 替换后闪烁整个被修改区域：按文档尺寸变化推算替换后范围，
+           收集覆盖到的顶层块 DOM 矩形（一眼看到 AI 改了哪里） */
+        const container = scrollRef.current
+        if (!container) return
+        const delta = editor.state.doc.content.size - oldSize
+        const newEnd = range.to + delta
+        const boxes: { x: number; y: number; w: number; h: number }[] = []
+        const firstElRef: { current: HTMLElement | null } = { current: null }
+        let idx = 0
+        editor.state.doc.forEach((node, offset) => {
+          const hit = offset + node.nodeSize > range.from && offset < newEnd
+          if (hit) {
+            const el = container.querySelector<HTMLElement>(
+              `.ProseMirror > [data-index="${idx}"]`
+            )
+            if (el) {
+              if (!firstElRef.current) firstElRef.current = el
+              const r = el.getBoundingClientRect()
+              boxes.push({ x: r.left, y: r.top, w: r.width, h: r.height })
+            }
+          }
+          idx++
+        })
+        firstElRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        if (boxes.length) showFlash(boxes)
       },
       getMarkdown: () => {
         if (!editor) return ''
@@ -501,7 +536,7 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         }
       },
     }),
-    [editor]
+    [editor, showFlash]
   )
 
   const tplClass = TPL_CLASS[template] ?? 'tpl-minimal'
@@ -795,13 +830,14 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         </div>
       )}
 
-      {/* 块定位闪烁浮层（React 层实现，不触碰 PM 托管 DOM） */}
-      {flashBox && (
+      {/* 块定位/替换区域闪烁浮层（React 层实现，不触碰 PM 托管 DOM） */}
+      {flashBoxes?.map((b, i) => (
         <div
+          key={i}
           className="block-flash-overlay"
-          style={{ left: flashBox.x, top: flashBox.y, width: flashBox.w, height: flashBox.h }}
+          style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
         />
-      )}
+      ))}
 
       {/* 链接编辑弹窗 */}
       <Dialog open={linkDraft !== null} onOpenChange={(open) => !open && setLinkDraft(null)}>
