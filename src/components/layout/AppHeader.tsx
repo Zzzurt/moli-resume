@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   LayoutTemplate,
   FileDown,
+  FileImage,
   FileUp,
   FileText,
   Printer,
@@ -13,6 +14,8 @@ import {
   Settings,
   Check,
   Shrink,
+  Keyboard,
+  History,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -54,6 +57,7 @@ interface AppHeaderProps {
   template: TemplateId
   onTemplateChange: (t: TemplateId) => void
   onExportPdf: () => void
+  onExportPng?: () => void
   onExportMd: () => void
   onImportMd: () => void
   exporting?: boolean
@@ -64,6 +68,9 @@ interface AppHeaderProps {
   content?: string
   /** 主题色覆盖（联动模板面板卡片） */
   accentColor?: string
+  /** 打开历史版本 / 快捷键帮助 */
+  onHistory?: () => void
+  onShortcuts?: () => void
 }
 
 export function AppHeader({
@@ -72,6 +79,7 @@ export function AppHeader({
   template,
   onTemplateChange,
   onExportPdf,
+  onExportPng,
   onExportMd,
   onImportMd,
   exporting,
@@ -79,6 +87,8 @@ export function AppHeader({
   onSmartOnePageChange,
   content = '',
   accentColor,
+  onHistory,
+  onShortcuts,
 }: AppHeaderProps) {
   const navigate = useNavigate()
   const { theme, toggleTheme, settings, update } = useSettings()
@@ -174,6 +184,19 @@ export function AppHeader({
                   </button>
                 ))}
               </div>
+              {/* 自定义主题色（学木及的 ColorPicker）：任意色实时生效 */}
+              <DropdownMenuSeparator />
+              <label className="flex cursor-pointer items-center gap-2.5 px-2 py-1.5 text-sm outline-none">
+                <input
+                  type="color"
+                  aria-label="自定义主题色"
+                  data-testid="accent-custom"
+                  value={currentAccent ?? '#3b82f6'}
+                  onChange={(e) => update('accentColor', e.target.value)}
+                  className="size-6 cursor-pointer rounded border border-border bg-transparent p-0.5"
+                />
+                <span className="flex-1">自定义颜色…</span>
+              </label>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -192,6 +215,21 @@ export function AppHeader({
               <DropdownMenuItem onClick={onExportMd}>
                 <FileDown className="size-4" /> 导出 .md
               </DropdownMenuItem>
+              {onExportPng && (
+                <DropdownMenuItem disabled={exporting} onClick={onExportPng}>
+                  <FileImage className="size-4" /> 导出长图 PNG（多页拼接）
+                </DropdownMenuItem>
+              )}
+              {onHistory && (
+                <DropdownMenuItem onClick={onHistory}>
+                  <History className="size-4" /> 历史版本
+                </DropdownMenuItem>
+              )}
+              {onShortcuts && (
+                <DropdownMenuItem onClick={onShortcuts}>
+                  <Keyboard className="size-4" /> 快捷键与输入规则
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 

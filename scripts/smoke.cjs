@@ -71,6 +71,77 @@ async function main() {
   }
 
   try {
+    /* 2d. Markdown 源码模式：查看 → 编辑 → 切回块编辑后内容同步 */
+    await page.getByRole('button', { name: '源码', exact: true }).click()
+    const src = page.getByTestId('source-editor')
+    await src.waitFor({ timeout: 5000 })
+    const md0 = await src.inputValue()
+    if (!md0.includes('#')) throw new Error('source view missing markdown heading')
+    await src.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('\n\n## 冒烟新增板块\n\n- 源码条目一')
+    await page.waitForTimeout(800) /* 等防抖解析回块文档 */
+    await page.getByRole('button', { name: '源码', exact: true }).click()
+    await page.locator('.ProseMirror').waitFor({ timeout: 5000 })
+    const pmText = await page.locator('.ProseMirror').textContent()
+    if (!pmText.includes('源码条目一')) throw new Error('source edit not synced to wysiwyg')
+    ok('markdown source mode roundtrip')
+  } catch (e) {
+    fail('markdown source mode', e)
+  }
+
+  try {
+    /* 2e. 自定义主题色：input[type=color] 设值 → 预览 --rs-accent 联动 */
+    await page.getByRole('button', { name: '主题色' }).click()
+    const colorInput = page.getByTestId('accent-custom')
+    await colorInput.waitFor({ timeout: 5000 })
+    await colorInput.evaluate((el) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      setter.call(el, '#123456')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await page.waitForTimeout(400)
+    const accent = await page
+      .locator('[data-testid="resume-paper"] [class*="tpl-"]')
+      .first()
+      .evaluate((el) => getComputedStyle(el).getPropertyValue('--rs-accent').trim().toLowerCase())
+    if (accent !== '#123456') throw new Error(`--rs-accent=${accent}, want #123456`)
+    await page.keyboard.press('Escape')
+    ok('custom accent color')
+  } catch (e) {
+    fail('custom accent color', e)
+  }
+
+  try {
+    /* 2f. 历史版本：列表有快照 → 恢复成功 */
+    await page.getByRole('button', { name: '文件' }).click()
+    await page.getByRole('menuitem', { name: '历史版本' }).click()
+    const restoreBtns = page.getByRole('button', { name: '恢复' })
+    await restoreBtns.first().waitFor({ timeout: 5000 })
+    await restoreBtns.first().click()
+    /* 确认弹窗中的「恢复」（exact 区分列表项的「恢复」按钮） */
+    await page.getByRole('button', { name: '恢复', exact: true }).last().click()
+    await page.getByText('已恢复到所选版本').waitFor({ timeout: 5000 })
+    ok('history snapshot restore')
+  } catch (e) {
+    fail('history snapshot restore', e)
+  }
+
+  try {
+    /* 2g. 长图 PNG 导出 */
+    await page.getByRole('button', { name: '文件' }).click()
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.getByRole('menuitem', { name: /导出长图 PNG/ }).click(),
+    ])
+    const p = await download.path()
+    if (!p) throw new Error('no download path')
+    ok('png long-image export')
+  } catch (e) {
+    fail('png long-image export', e)
+  }
+
+  try {
     /* 3. 行内规则：先清空文档（当前在 2b 创建的 pill 简历编辑器内），排除默认内容干扰 */
     const pm = page.locator('.ProseMirror')
     await pm.click()

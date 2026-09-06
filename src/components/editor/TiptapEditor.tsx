@@ -33,6 +33,9 @@ import {
   Eraser,
   MoreHorizontal,
   ChevronUp,
+  Undo2,
+  Redo2,
+  FileCode2,
   Table as TableIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -73,6 +76,8 @@ export interface EditorHandle {
   replaceRangeMarkdown: (range: DocRange, md: string) => void
   getMarkdown: () => string
   setDocFromMarkdown: (md: string) => void
+  /** 用 Tiptap JSON 字符串整体替换文档（版本历史恢复用），并同步 docJson */
+  setDocJson: (json: string) => void
 }
 
 interface TiptapEditorProps {
@@ -196,6 +201,52 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
   /** 链接编辑弹窗：null 关闭；prev 记录原 href（空串表示新建链接） */
   const [linkDraft, setLinkDraft] = useState<{ prev: string } | null>(null)
   const [linkUrl, setLinkUrl] = useState('')
+  /** Markdown 源码模式：textarea 与块编辑共享同一 JSON（改源码 → 解析回块 → 预览/保存同步） */
+  const [sourceMode, setSourceMode] = useState(false)
+  const [sourceMd, setSourceMd] = useState('')
+  /** 源码防抖提交：切换模式/卸载时 flush，避免丢最后几笔输入 */
+  const sourceFlushRef = useRef<{ timer: number; apply: () => void } | null>(null)
+
+  const flushSource = () => {
+    const pending = sourceFlushRef.current
+    if (pending) {
+      window.clearTimeout(pending.timer)
+      pending.apply()
+      sourceFlushRef.current = null
+    }
+  }
+
+  const toggleSourceMode = () => {
+    if (!editor) return
+    if (!sourceMode) {
+      // 进入源码：块 JSON → Markdown（与导出 .md 行为一致）
+      const storage = editor.storage as unknown as { markdown?: { getMarkdown: () => string } }
+      setSourceMd(storage.markdown?.getMarkdown() ?? '')
+      setSourceMode(true)
+    } else {
+      flushSource()
+      setSourceMode(false)
+    }
+  }
+
+  /* 源码输入 → 防抖解析回块文档；emitUpdate=false 避免光标回环，手动同步 docJson */
+  const handleSourceChange = (v: string) => {
+    setSourceMd(v)
+    if (!editor) return
+    if (sourceFlushRef.current) window.clearTimeout(sourceFlushRef.current.timer)
+    const apply = () => {
+      sourceFlushRef.current = null
+      editor.commands.setContent(v, false)
+      onDocChangeRef.current(JSON.stringify(editor.getJSON()))
+    }
+    sourceFlushRef.current = { timer: window.setTimeout(apply, 350), apply }
+  }
+
+  /* 卸载时提交未落盘的源码输入 */
+  useEffect(() => {
+    return () => flushSource()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const slashRef = useRef(slash)
 
@@ -439,6 +490,16 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
       setDocFromMarkdown: (md: string) => {
         editor?.commands.setContent(md, true)
       },
+      setDocJson: (json: string) => {
+        if (!editor) return
+        try {
+          const parsed = JSON.parse(json)
+          editor.commands.setContent(parsed, false)
+          onDocChangeRef.current(JSON.stringify(editor.getJSON()))
+        } catch {
+          /* 畸形快照：忽略 */
+        }
+      },
     }),
     [editor]
   )
@@ -456,6 +517,30 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
           <span className="mr-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             块编辑器
           </span>
+          {editor && (
+            <>
+              <button
+                type="button"
+                title="撤销（Ctrl+Z）"
+                aria-label="撤销"
+                disabled={!editor.can().undo()}
+                onClick={() => editor.chain().focus().undo().run()}
+                className="inline-flex size-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
+              >
+                <Undo2 className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="重做（Ctrl+Y）"
+                aria-label="重做"
+                disabled={!editor.can().redo()}
+                onClick={() => editor.chain().focus().redo().run()}
+                className="inline-flex size-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
+              >
+                <Redo2 className="size-3.5" />
+              </button>
+            </>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -486,6 +571,12 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
               checking ? <Loader2 className="size-3.5 animate-spin" /> : <SpellCheck2 className="size-3.5" />
             }
           />
+          <Button2
+            onClick={toggleSourceMode}
+            label="源码"
+            accent={sourceMode}
+            icon={<FileCode2 className="size-3.5" />}
+          />
         </div>
         <span
           className={cn(
@@ -515,21 +606,37 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto bg-muted/40 px-6 scrollbar-thin dark:bg-black/30"
       >
-        <div
-          className={cn(
-            'editor-canvas mx-auto my-6 w-full max-w-[720px] rounded-md border bg-card px-4 py-2 shadow-sm',
-            tplClass
-          )}
-          style={accentColor ? ({ ['--rs-accent']: accentColor } as CSSProperties) : undefined}
-          onKeyDownCapture={handleKeyCapture}
-        >
-          <EditorContent editor={editor} />
-        </div>
+        {sourceMode ? (
+          /* Markdown 源码模式：与块编辑共享同一 JSON，输入防抖同步预览与自动保存 */
+          <textarea
+            value={sourceMd}
+            onChange={(e) => handleSourceChange(e.target.value)}
+            spellCheck={false}
+            data-testid="source-editor"
+            placeholder="# 姓名&#10;&#10;## 教育背景&#10;&#10;### 某大学 · 专业 · 本科 | 2015.09 - 2019.06&#10;&#10;- 条目…"
+            className="mx-auto my-6 block h-[calc(100%-3rem)] min-h-[400px] w-full max-w-[720px] resize-none rounded-md border bg-card p-5 font-mono text-[13px] leading-relaxed text-foreground shadow-sm outline-none placeholder:text-muted-foreground/60"
+          />
+        ) : (
+          <div
+            className={cn(
+              'editor-canvas mx-auto my-6 w-full max-w-[720px] rounded-md border bg-card px-4 py-2 shadow-sm',
+              tplClass
+            )}
+            style={accentColor ? ({ ['--rs-accent']: accentColor } as CSSProperties) : undefined}
+            onKeyDownCapture={handleKeyCapture}
+          >
+            <EditorContent editor={editor} />
+          </div>
+        )}
       </div>
 
       {/* 状态栏 */}
       <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
-        <span># 标题 · - 列表 · 1. 编号 · &gt; 引用 · --- 分割线 · **加粗** · 直接打 Markdown 即时转换</span>
+        <span>
+          {sourceMode
+            ? '源码模式：Markdown 实时同步预览与自动保存，点「源码」切回块编辑'
+            : '# 标题 · - 列表 · 1. 编号 · > 引用 · --- 分割线 · **加粗** · 直接打 Markdown 即时转换'}
+        </span>
         <span className="font-mono">{blockCount} 块</span>
       </div>
 

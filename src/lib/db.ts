@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, TEMPLATES } from '@/types'
 class ResumeDB extends Dexie {
   resumes!: Table<Resume, number>
   settings!: Table<{ key: string; value: unknown }, string>
+  snapshots!: Table<ResumeSnapshot, number>
 
   constructor() {
     super('ink-resume')
@@ -13,10 +14,43 @@ class ResumeDB extends Dexie {
       resumes: '++id, updatedAt',
       settings: 'key',
     })
+    // v2：版本历史快照（每份简历独立保留）
+    this.version(2).stores({
+      snapshots: '++id, resumeId, createdAt',
+    })
   }
 }
 
 export const db = new ResumeDB()
+
+/* ---------- 版本历史快照 ---------- */
+
+export interface ResumeSnapshot {
+  id?: number
+  resumeId: number
+  title: string
+  content: string
+  template: TemplateId
+  createdAt: number
+}
+
+/** 每份简历最多保留的快照数（超出删最旧） */
+const MAX_SNAPSHOTS = 20
+
+export async function addSnapshot(s: Omit<ResumeSnapshot, 'id' | 'createdAt'>): Promise<void> {
+  await db.snapshots.add({ ...s, createdAt: Date.now() })
+  // 超限清理：删该简历最旧的快照
+  const all = await db.snapshots.where('resumeId').equals(s.resumeId).toArray()
+  if (all.length > MAX_SNAPSHOTS) {
+    const stale = all.sort((a, b) => a.createdAt - b.createdAt).slice(0, all.length - MAX_SNAPSHOTS)
+    await db.snapshots.bulkDelete(stale.map((x) => x.id!).filter(Boolean))
+  }
+}
+
+export async function listSnapshots(resumeId: number): Promise<ResumeSnapshot[]> {
+  const all = await db.snapshots.where('resumeId').equals(resumeId).toArray()
+  return all.sort((a, b) => b.createdAt - a.createdAt)
+}
 
 /* ---------- 设置读写 ---------- */
 

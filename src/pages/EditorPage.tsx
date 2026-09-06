@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { ArrowLeft } from 'lucide-react'
-import { getResume, updateResume } from '@/lib/db'
+import { getResume, updateResume, addSnapshot } from '@/lib/db'
+import type { ResumeSnapshot } from '@/lib/db'
 import { isTiptapDoc } from '@/lib/docUtils'
-import { exportPaperToPdf } from '@/lib/pdf'
+import { exportPaperToPdf, exportPaperToPng } from '@/lib/pdf'
 import { downloadFile, pickTextFile, titleFromFilename } from '@/lib/fileIO'
 import { TiptapEditor, type EditorHandle, type DocRange } from '@/components/editor/TiptapEditor'
 import { Preview } from '@/components/preview/Preview'
@@ -14,6 +15,8 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { PolishDialog } from '@/components/ai/PolishDialog'
 import { GrammarDialog } from '@/components/ai/GrammarDialog'
+import { HistoryVersionsDialog } from '@/components/editor/HistoryVersionsDialog'
+import { ShortcutsDialog } from '@/components/editor/ShortcutsDialog'
 import { useSettings } from '@/hooks/useSettings'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import type { AiMode } from '@/lib/aiService'
@@ -45,6 +48,9 @@ export function EditorPage() {
   const [polishOriginal, setPolishOriginal] = useState<string | null>(null)
   /** 润色对应的文档范围（选区对齐到顶层块），应用替换时定位 */
   const [polishRange, setPolishRange] = useState<DocRange | null>(null)
+  /** 历史 / 快捷键弹窗 */
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   /** 当前 AI 助手模式 */
   const [aiMode, setAiMode] = useState<AiMode>('polish')
   const [grammarOpen, setGrammarOpen] = useState(false)
@@ -60,6 +66,8 @@ export function EditorPage() {
   const saveRetryTimer = useRef<number | undefined>(undefined)
   /** 分栏落库防抖 */
   const ratioSaveTimer = useRef<number | undefined>(undefined)
+  /** 上次快照时间（自动快照间隔控制） */
+  const lastSnapAt = useRef(0)
 
   /* ---------- 加载 ---------- */
   useEffect(() => {
@@ -72,8 +80,14 @@ export function EditorPage() {
       setPhotoPos(resume.photoPos ?? { dx: 0, dy: 0 })
       savedRef.current.title = resume.title
       setInitialContent(resume.content)
+      // 打开简历即存一份历史快照（版本历史入口）
+      void addSnapshot({ resumeId, title: resume.title, content: resume.content, template: resume.template })
+        .then(() => {
+          lastSnapAt.current = Date.now()
+        })
+        .catch(() => {})
     }
-  }, [resume])
+  }, [resume, resumeId])
 
   /* 文档不存在检测 */
   useEffect(() => {
@@ -134,6 +148,16 @@ export function EditorPage() {
         savedRef.current = { doc: debouncedDoc, title: effectiveTitle }
         setSaving(false)
         window.clearTimeout(saveRetryTimer.current)
+        // 自动保存成功后间隔 >10 分钟存一份历史快照（失败不打断保存流程）
+        if (Date.now() - lastSnapAt.current > 10 * 60 * 1000) {
+          lastSnapAt.current = Date.now()
+          void addSnapshot({
+            resumeId,
+            title: effectiveTitle,
+            content: debouncedDoc,
+            template,
+          }).catch(() => {})
+        }
       })
       .catch(() => {
         // 保存失败：保持 dirty，8 秒后自动重试；固定 id 的 toast 避免连续弹窗堆积
@@ -146,7 +170,7 @@ export function EditorPage() {
     return () => {
       cancelled = true
     }
-  }, [debouncedDoc, debouncedTitle, docReady, pending, resumeId, effectiveTitle, saveRetry])
+  }, [debouncedDoc, debouncedTitle, docReady, pending, resumeId, effectiveTitle, saveRetry, template])
 
   /* 卸载/切换简历时 flush 未保存内容 */
   useEffect(() => {
@@ -167,6 +191,28 @@ export function EditorPage() {
     setTemplate(t)
     if (!Number.isNaN(resumeId)) void updateResume(resumeId, { template: t })
   }
+
+  /* ---------- 历史版本恢复：先快照当前状态，再应用所选快照 ---------- */
+  const handleRestoreSnapshot = useCallback(
+    (snapshot: ResumeSnapshot) => {
+      const { docJson: currentDoc } = latest.current
+      if (currentDoc) {
+        void addSnapshot({
+          resumeId,
+          title: title.trim() || '未命名简历',
+          content: currentDoc,
+          template,
+        }).catch(() => {})
+      }
+      editorHandleRef.current?.setDocJson(snapshot.content)
+      if (snapshot.template !== template) handleTemplateChange(snapshot.template)
+      // 恢复后的内容立即落库（不等防抖）
+      void updateResume(resumeId, { content: snapshot.content }).catch(() => {})
+      savedRef.current = { doc: snapshot.content, title: savedRef.current.title }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resumeId, template, title]
+  )
 
   /* ---------- 预览 → 编辑器块定位 ---------- */
   const handleLineClick = useCallback((index: number) => {
@@ -207,7 +253,7 @@ export function EditorPage() {
     setChecking(true)
   }
 
-  /* ---------- PDF 导出 ---------- */
+  /* ---------- PDF / 长图导出 ---------- */
   const handleExportPdf = async () => {
     const paper = paperRef.current
     if (!paper) return
@@ -215,6 +261,20 @@ export function EditorPage() {
     try {
       await exportPaperToPdf(paper, title.trim() || '简历')
       toast.success('PDF 已导出')
+    } catch (e) {
+      toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleExportPng = async () => {
+    const paper = paperRef.current
+    if (!paper) return
+    setExporting(true)
+    try {
+      await exportPaperToPng(paper, `${title.trim() || '简历'}-长图`)
+      toast.success('长图 PNG 已导出')
     } catch (e) {
       toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
@@ -308,6 +368,7 @@ export function EditorPage() {
         template={template}
         onTemplateChange={handleTemplateChange}
         onExportPdf={() => void handleExportPdf()}
+        onExportPng={() => void handleExportPng()}
         onExportMd={handleExportMd}
         onImportMd={() => void handleImportMd()}
         exporting={exporting}
@@ -315,6 +376,8 @@ export function EditorPage() {
         onSmartOnePageChange={(on) => updateSetting('smartOnePage', on)}
         content={debouncedDoc}
         accentColor={settings.accentColor}
+        onHistory={() => setHistoryOpen(true)}
+        onShortcuts={() => setShortcutsOpen(true)}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -372,6 +435,15 @@ export function EditorPage() {
         markdown={grammarMd}
         onApply={(md) => editorHandleRef.current?.setDocFromMarkdown(md)}
       />
+
+      <HistoryVersionsDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        resumeId={resumeId}
+        onRestore={handleRestoreSnapshot}
+      />
+
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
 
       <ConfirmDialog
         open={pendingImport !== null}
