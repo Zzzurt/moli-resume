@@ -95,7 +95,7 @@ npm run typecheck  # TypeScript 类型检查
 │   ├── diag_onepage.cjs         # 智能一页诊断脚本
 │   ├── generate_template_snapshots.cjs  # 模板缩略图生成
 │   ├── smoke.cjs / smoke_test.cjs       # 冒烟测试（编辑/列表/AI）
-│   ├── shoot_*.cjs              # 模板/对话/编辑器 UI 截图脚本
+│   └── shoot_*.cjs              # 模板/对话/编辑器 UI 截图脚本
 └── src/
     ├── App.tsx                # 路由：/ 简历列表、/resume/:id 编辑工作台
     ├── pages/
