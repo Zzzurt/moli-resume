@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react'
 import { getResume, updateResume, addSnapshot } from '@/lib/db'
 import type { ResumeSnapshot } from '@/lib/db'
 import { isTiptapDoc } from '@/lib/docUtils'
+import { docToMarkdown } from '@/lib/editorSetup'
 import { exportPaperToPdf, exportPaperToPng } from '@/lib/pdf'
 import { downloadFile, pickTextFile, titleFromFilename } from '@/lib/fileIO'
 import { TiptapEditor, type EditorHandle, type DocRange } from '@/components/editor/TiptapEditor'
@@ -15,8 +16,16 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { PolishDialog } from '@/components/ai/PolishDialog'
 import { GrammarDialog } from '@/components/ai/GrammarDialog'
+import { JdMatchDialog } from '@/components/ai/JdMatchDialog'
 import { HistoryVersionsDialog } from '@/components/editor/HistoryVersionsDialog'
 import { ShortcutsDialog } from '@/components/editor/ShortcutsDialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { useSettings } from '@/hooks/useSettings'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import type { AiMode } from '@/lib/aiService'
@@ -46,11 +55,25 @@ export function EditorPage() {
   const [saveRetry, setSaveRetry] = useState(0)
   const [grammarMd, setGrammarMd] = useState('')
   const [polishOriginal, setPolishOriginal] = useState<string | null>(null)
+  /** ask 模式预填指令（JD 报告建议一键跳入） */
+  const [askInstruction, setAskInstruction] = useState<string>('')
   /** 润色对应的文档范围（选区对齐到顶层块），应用替换时定位 */
   const [polishRange, setPolishRange] = useState<DocRange | null>(null)
   /** 历史 / 快捷键弹窗 */
   const [historyOpen, setHistoryOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  /** JD 匹配弹窗（分析时快照当前简历全文） */
+  const [jdMatchOpen, setJdMatchOpen] = useState(false)
+  const [jdMarkdown, setJdMarkdown] = useState('')
+  /** 页面度量（Preview 上报）：状态栏页数 + 导出超页检测 */
+  const [pageMetrics, setPageMetrics] = useState<{
+    pageCount: number
+    density: number
+    smartOnePage: boolean
+  }>({ pageCount: 1, density: 0, smartOnePage: true })
+  const pageMetricsRef = useRef(pageMetrics)
+  /** 导出超页确认弹窗 */
+  const [exportPageConfirm, setExportPageConfirm] = useState(false)
   /** 当前 AI 助手模式 */
   const [aiMode, setAiMode] = useState<AiMode>('polish')
   const [grammarOpen, setGrammarOpen] = useState(false)
@@ -59,7 +82,8 @@ export function EditorPage() {
 
   const editorHandleRef = useRef<EditorHandle | null>(null)
   const paperRef = useRef<HTMLDivElement>(null)
-  const initialized = useRef(false)
+  /** 已完成初始化的 resumeId：防止同文档切换简历（组件复用）时旧状态残留、自动保存覆盖新简历 */
+  const initializedFor = useRef<number | null>(null)
   const savedRef = useRef({ doc: '', title: '' })
   const latest = useRef({ docJson: '', title: '' })
   /** 自动保存失败后的重试定时器 */
@@ -69,16 +93,16 @@ export function EditorPage() {
   /** 上次快照时间（自动快照间隔控制） */
   const lastSnapAt = useRef(0)
 
-  /* ---------- 加载 ---------- */
+  /* ---------- 加载（resumeId 变化即重新初始化，见 initializedFor 注释） ---------- */
   useEffect(() => {
-    if (resume && !initialized.current) {
-      initialized.current = true
+    if (resume && initializedFor.current !== resumeId) {
+      initializedFor.current = resumeId
       setTitle(resume.title)
       setTemplate(resume.template)
       setPhoto(resume.photo)
       setPhotoScale(resume.photoScale ?? 1)
       setPhotoPos(resume.photoPos ?? { dx: 0, dy: 0 })
-      savedRef.current.title = resume.title
+      savedRef.current = { doc: resume.content, title: resume.title }
       setInitialContent(resume.content)
       // 打开简历即存一份历史快照（版本历史入口）
       void addSnapshot({ resumeId, title: resume.title, content: resume.content, template: resume.template })
@@ -139,7 +163,8 @@ export function EditorPage() {
   const saveState = saving ? 'saving' : pending ? 'dirty' : 'saved'
 
   useEffect(() => {
-    if (!initialized.current || !docReady || !pending || Number.isNaN(resumeId)) return
+    /* initializedFor 门控：切换简历后、新内容初始化完成前，禁止用旧文档覆盖新简历 */
+    if (initializedFor.current !== resumeId || !docReady || !pending || Number.isNaN(resumeId)) return
     let cancelled = false
     setSaving(true)
     void updateResume(resumeId, { content: debouncedDoc, title: effectiveTitle })
@@ -254,7 +279,7 @@ export function EditorPage() {
   }
 
   /* ---------- PDF / 长图导出 ---------- */
-  const handleExportPdf = async () => {
+  const doExportPdf = async () => {
     const paper = paperRef.current
     if (!paper) return
     setExporting(true)
@@ -266,6 +291,27 @@ export function EditorPage() {
     } finally {
       setExporting(false)
     }
+  }
+
+  const handleExportPdf = () => {
+    const m = pageMetricsRef.current
+    /* 超页且智能一页未开启：主动提示（单页/已开启不打扰） */
+    if (m.pageCount > 1 && !m.smartOnePage) {
+      setExportPageConfirm(true)
+      return
+    }
+    void doExportPdf()
+  }
+
+  /** 开启智能一页 → 等测量收敛（换档+重渲染）→ 导出 */
+  const enableOnePageAndExport = async () => {
+    setExportPageConfirm(false)
+    updateSetting('smartOnePage', true)
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      if (pageMetricsRef.current.pageCount <= 1) break
+    }
+    await doExportPdf()
   }
 
   const handleExportPng = async () => {
@@ -367,7 +413,7 @@ export function EditorPage() {
         onTitleChange={handleTitleChange}
         template={template}
         onTemplateChange={handleTemplateChange}
-        onExportPdf={() => void handleExportPdf()}
+        onExportPdf={handleExportPdf}
         onExportPng={() => void handleExportPng()}
         onExportMd={handleExportMd}
         onImportMd={() => void handleImportMd()}
@@ -384,6 +430,7 @@ export function EditorPage() {
         <div className="min-w-0" style={{ width: `${editorRatio * 100}%` }}>
           {initialContent !== null && (
             <TiptapEditor
+              key={resumeId /* 切换简历时强制重建编辑器：新内容 + 重置撤销历史 */}
               ref={editorHandleRef}
               initialContent={initialContent}
               template={template}
@@ -393,6 +440,24 @@ export function EditorPage() {
               onDocChange={handleDocChange}
               onAiRequest={requestAi}
               onGrammarCheck={openGrammarCheck}
+              onJdMatch={() => {
+                /* 编辑器实例可能尚未就绪（reload 后异步初始化），兜底用最新 docJson 序列化 */
+                let md = editorHandleRef.current?.getMarkdown() ?? ''
+                if (!md.trim() && latest.current.docJson) {
+                  try {
+                    md = docToMarkdown(JSON.parse(latest.current.docJson))
+                  } catch {
+                    md = ''
+                  }
+                }
+                if (!md.trim()) {
+                  toast.warning('简历内容尚未加载完成，请稍后再试')
+                  return
+                }
+                setJdMarkdown(md)
+                setJdMatchOpen(true)
+              }}
+              pageMetrics={pageMetrics}
               accentColor={settings.accentColor}
             />
           )}
@@ -414,6 +479,10 @@ export function EditorPage() {
             onLineClick={handleLineClick}
             smartOnePage={settings.smartOnePage}
             accentColor={settings.accentColor}
+            onMetrics={(m) => {
+              pageMetricsRef.current = m
+              setPageMetrics(m)
+            }}
           />
         </div>
       </div>
@@ -423,7 +492,19 @@ export function EditorPage() {
         onOpenChange={(open) => !open && setPolishOriginal(null)}
         mode={aiMode}
         original={polishOriginal ?? ''}
-        onApply={applyPolish}
+        initialInstruction={askInstruction}
+        onApply={(polished) => {
+          applyPolish(polished)
+          setAskInstruction('')
+        }}
+      />
+
+      <JdMatchDialog
+        open={jdMatchOpen}
+        onOpenChange={setJdMatchOpen}
+        fullMarkdown={jdMarkdown}
+        onLocateBlock={(text) => editorHandleRef.current?.findRangeByText(text) ?? null}
+        onApplyRewrite={(range, polished) => editorHandleRef.current?.replaceRangeMarkdown(range, polished)}
       />
 
       <GrammarDialog
@@ -444,6 +525,29 @@ export function EditorPage() {
       />
 
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+
+      {/* 导出超页确认：主动提示智能一页，而不是默默导出多页 */}
+      <Dialog open={exportPageConfirm} onOpenChange={setExportPageConfirm}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>内容超过一页</DialogTitle>
+            <DialogDescription>
+              当前简历共 {pageMetricsRef.current.pageCount} 页。开启「智能一页」可自动收紧排版并压缩至恰好一页（字号不变，密度微调）。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Button size="sm" data-testid="export-enable-onepage" onClick={() => void enableOnePageAndExport()}>
+              开启智能一页并导出
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => { setExportPageConfirm(false); void doExportPdf() }}>
+              仍按多页导出
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setExportPageConfirm(false)}>
+              取消
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={pendingImport !== null}

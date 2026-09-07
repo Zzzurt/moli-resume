@@ -48,6 +48,8 @@ interface PreviewProps {
   onLineClick?: (index: number) => void
   /** 智能一页：内容超一页时自动缩放至恰好一页 */
   smartOnePage?: boolean
+  /** 页面度量上报（状态栏实时页数 / 导出超页检测）：paperHeight 或密度变化时触发 */
+  onMetrics?: (m: { pageCount: number; density: number; smartOnePage: boolean }) => void
   /** 主题色覆盖（作用到模板 --rs-accent）；空 = 模板默认色 */
   accentColor?: string
 }
@@ -72,6 +74,7 @@ export function Preview({
   paperRef,
   onLineClick,
   smartOnePage = true,
+  onMetrics,
   accentColor,
 }: PreviewProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -214,6 +217,12 @@ export function Preview({
 
   const pageCount = Math.max(1, Math.ceil((paperHeight - 1) / A4_H))
   const fitActive = smartOnePage && contentFit.fit && contentFit.scale < 1
+
+  /* 页面度量上报：状态栏实时页数 / 导出超页检测的数据源 */
+  useEffect(() => {
+    onMetrics?.({ pageCount, density, smartOnePage })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageCount, density, smartOnePage])
 
   /* 事件委托：data-index → 块索引 */
   const handleClick = useCallback(

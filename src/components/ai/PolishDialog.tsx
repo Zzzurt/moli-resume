@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { diffLines } from 'diff'
 import { Sparkles, RefreshCw, Loader2, ArrowRight, Send } from 'lucide-react'
+import { AiProgress } from '@/components/ai/AiProgress'
+import { lineParts, DiffLines } from '@/components/ai/DiffLines'
 import {
   Dialog,
   DialogContent,
@@ -13,13 +14,14 @@ import { Button } from '@/components/ui/button'
 import { useSettings } from '@/hooks/useSettings'
 import { aiErrorMessage, aiAssist, aiModeTitle, type AiMode } from '@/lib/aiService'
 import { toast } from 'sonner'
-import { cn } from '@/lib/utils'
 
 interface PolishDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   mode: AiMode
   original: string
+  /** ask 模式打开时预填的处理指令（如从 JD 报告建议一键跳入） */
+  initialInstruction?: string
   /** 确认应用：用处理结果替换原选区 */
   onApply: (polished: string) => void
 }
@@ -32,59 +34,15 @@ const MODE_DESCRIPTIONS: Record<AiMode, string> = {
   ask: '输入任意指令（如“翻译成英文”“改写成 STAR 结构”），AI 按指令处理选中内容。',
 }
 
-/* ---------- 行级 diff 渲染 ---------- */
-
-interface DiffPart {
-  text: string
-  type: 'same' | 'added' | 'removed'
-}
-
-function lineParts(a: string, b: string): DiffPart[] {
-  return diffLines(a, b).map((p) => ({
-    text: p.value,
-    type: p.added ? 'added' : p.removed ? 'removed' : 'same',
-  }))
-}
-
-/** diff 分行渲染：added/removed 行加背景标注（空行占位保持行结构） */
-function DiffLines({
-  parts,
-  side,
-}: {
-  parts: DiffPart[]
-  side: 'before' | 'after'
-}) {
-  const lines: { text: string; type: DiffPart['type'] }[] = []
-  for (const part of parts) {
-    if (side === 'after' && part.type === 'removed') continue
-    if (side === 'before' && part.type === 'added') continue
-    // 保留尾部换行信息：按 \n 拆行后末段为空说明整段以换行结尾
-    const segs = part.text.split('\n')
-    segs.forEach((text, i) => {
-      if (i === segs.length - 1 && text === '' && segs.length > 1) return // 尾部换行
-      lines.push({ text: text || ' ', type: part.type })
-    })
-  }
-  return (
-    <div className="max-h-64 overflow-auto font-mono text-xs leading-relaxed scrollbar-thin">
-      {lines.map((l, i) => (
-        <div
-          key={i}
-          className={cn(
-            '-mx-3 whitespace-pre-wrap break-words px-3',
-            l.type === 'added' && 'bg-emerald-500/15 text-emerald-900 dark:text-emerald-200',
-            l.type === 'removed' && 'bg-red-500/10 text-red-900/70 line-through decoration-red-400/60 dark:text-red-200/70'
-          )}
-        >
-          {l.text}
-        </div>
-      ))}
-    </div>
-  )
-}
-
 /** AI 助手：润色 / 优化 / 精简 / 排版 / 提问，diff 对照（改动行高亮），确认后替换 */
-export function PolishDialog({ open, onOpenChange, mode, original, onApply }: PolishDialogProps) {
+export function PolishDialog({
+  open,
+  onOpenChange,
+  mode,
+  original,
+  initialInstruction,
+  onApply,
+}: PolishDialogProps) {
   const { settings } = useSettings()
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<string | null>(null)
@@ -121,9 +79,9 @@ export function PolishDialog({ open, onOpenChange, mode, original, onApply }: Po
     if (open) {
       setResult(null)
       setError(null)
-      setInstruction('')
+      setInstruction(mode === 'ask' ? (initialInstruction ?? '') : '')
       setLive(null)
-      // 提问模式不自动执行（等用户输入指令），其余模式自动跑
+      // 提问模式不自动执行（等用户确认/修改指令），其余模式自动跑
       if (mode !== 'ask') void run()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -200,7 +158,11 @@ export function PolishDialog({ open, onOpenChange, mode, original, onApply }: Po
               {parts && <span className="font-normal normal-case text-[10px]">（红 = 移除/改前）</span>}
             </div>
             {parts ? (
-              <DiffLines parts={parts} side="before" />
+              <DiffLines
+                parts={parts}
+                side="before"
+                className="max-h-64 overflow-auto font-mono text-xs leading-relaxed scrollbar-thin"
+              />
             ) : (
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed scrollbar-thin">
                 {original}
@@ -218,20 +180,24 @@ export function PolishDialog({ open, onOpenChange, mode, original, onApply }: Po
               )}
             </div>
             {loading ? (
-              live ? (
-                <>
+              <>
+                <AiProgress
+                  label={live ? '生成中…' : '正在连接模型…'}
+                  chars={live ? live.length : undefined}
+                  compact
+                />
+                {live ? (
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed scrollbar-thin">
                     {live}
                   </pre>
-                  <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <Loader2 className="size-3 animate-spin" /> 生成中…
+                ) : (
+                  <div className="flex h-24 items-center justify-center text-center text-[11px] leading-relaxed text-muted-foreground">
+                    正在把简历片段与指令发给模型
+                    <br />
+                    首字生成通常需要几秒，请稍候
                   </div>
-                </>
-              ) : (
-                <div className="flex h-24 items-center justify-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" /> 正在连接模型…
-                </div>
-              )
+                )}
+              </>
             ) : error ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
                 <p className="text-xs text-destructive">{error}</p>
@@ -240,7 +206,11 @@ export function PolishDialog({ open, onOpenChange, mode, original, onApply }: Po
                 </Button>
               </div>
             ) : parts ? (
-              <DiffLines parts={parts} side="after" />
+              <DiffLines
+                parts={parts}
+                side="after"
+                className="max-h-64 overflow-auto font-mono text-xs leading-relaxed scrollbar-thin"
+              />
             ) : null}
           </div>
         </div>

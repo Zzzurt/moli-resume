@@ -37,16 +37,37 @@ async function idbAddResume(page, title, content, template) {
   )
 }
 
+/** 经 IndexedDB 写设置项 */
+async function idbSetSetting(page, key, value) {
+  await page.evaluate(
+    ({ key, value }) =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open('ink-resume')
+        open.onsuccess = () => {
+          const db = open.result
+          const tx = db.transaction('settings', 'readwrite')
+          tx.objectStore('settings').put({ key, value })
+          tx.oncomplete = () => { db.close(); resolve() }
+          tx.onerror = () => reject(tx.error)
+        }
+      }),
+    { key, value }
+  )
+}
+
 async function main() {
   const browser = await chromium.launch()
   const page = await browser.newPage()
   const pageErrors = []
   page.on('pageerror', (e) => pageErrors.push('pageerror: ' + e.message))
+  page.on('console', (m) => {
+    if (m.text().includes('[diag-jd]')) console.log('[page-console]', m.text())
+  })
 
   try {
     /* 1. 列表页加载 */
     await page.goto(`${BASE}/#/`)
-    await page.getByText('我的简历').waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
     ok('list page loads')
   } catch (e) {
     fail('list page loads', e)
@@ -65,7 +86,7 @@ async function main() {
 
     /* 2b. 新建对话框：选模板 → 放大预览 → 使用此模板 */
     await page.goto(`${BASE}/#/`)
-    await page.getByText('我的简历').waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
     await page.getByRole('button', { name: '新建简历' }).click()
     const pillCard = page.getByTestId('tpl-card-pill')
     await pillCard.waitFor({ timeout: 10000 })
@@ -212,6 +233,135 @@ async function main() {
   }
 
   try {
+    /* 2j. 状态栏页数：单页显示「1 页」；超长内容显示多页警告 */
+    await page.getByText('1 页', { exact: true }).waitFor({ timeout: 5000 })
+    ok('statusbar page count (single page)')
+    const longMd = Array.from(
+      { length: 60 },
+      () => '## 段落标题\n\n- 条目内容用于撑高页面，包含一些描述文字。\n- 第二条目内容。'
+    ).join('\n\n')
+    const longId = await idbAddResume(page, '多页测试', longMd, 'minimal')
+    await page.goto(`${BASE}/#/resume/${longId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.waitForTimeout(1200) /* 等智能一页测量收敛 */
+    await page.getByText(/内容 \d+ 页/).waitFor({ timeout: 10000 })
+    ok('statusbar page metrics (multi-page warning)')
+  } catch (e) {
+    fail('statusbar page metrics', e)
+  }
+
+  try {
+    /* 2k. 导出超页提示：智能一页关闭 + 多页内容 → 弹确认 →「开启智能一页并导出」 */
+    await idbSetSetting(page, 'smartOnePage', false)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.waitForTimeout(1000)
+    await page.getByRole('button', { name: '导出 PDF' }).click()
+    const enableBtn = page.getByTestId('export-enable-onepage')
+    await enableBtn.waitFor({ timeout: 5000 })
+    ok('export over-page prompt shown')
+    const dlPromise = page.waitForEvent('download', { timeout: 60000 })
+    await enableBtn.click()
+    await dlPromise
+    ok('enable-onepage then export proceeds')
+    /* 恢复智能一页默认值，避免影响后续用例 */
+    await idbSetSetting(page, 'smartOnePage', true)
+  } catch (e) {
+    fail('export over-page prompt', e)
+  }
+
+  try {
+    /* 2l. JD 匹配 → 报告内**连续逐条改写**：JSON 报告 → 卡片改写(流式) → diff → 应用(不关弹窗) → 下一条 */
+    const jdCtx = await browser.newContext()
+    const p2 = await jdCtx.newPage()
+    let askCalls = 0
+    const rewrites = [
+      '- 主导营销活动搭建平台重构，并负责 Node.js BFF 层接口设计，首屏加载从 3.2s 降至 1.1s',
+      '前端工程师，五年经验，近期在实践 Node.js 全栈开发',
+    ]
+    await p2.route('**/chat/completions**', (route) => {
+      const reqBody = route.request().postData() ?? ''
+      let content
+      if (reqBody.includes('匹配总评')) {
+        /* jdAnalyze：system prompt 含结构说明关键词 */
+        content = JSON.stringify({
+          summary: '匹配度较高，前端能力契合，量化成果突出。',
+          covered: ['React 生态：简历提及组件库 monorepo 方案'],
+          gaps: [{ text: 'JD 要求的 Node.js 服务端经验未体现', severity: '严重' }],
+          suggestions: [
+            {
+              /* 带加粗语法标记的锚点：回归「AI 复制 Markdown 源码 vs 渲染纯文本」匹配修复 */
+              original: '主导营销活动搭建平台重构，**首屏加载从 3.2s 降至 1.1s**',
+              instruction: '为该条目补充与 Node.js 服务端协作的经历描述',
+              reason: 'JD 明确要求服务端经验，该条目最贴近',
+            },
+            {
+              original: '前端工程师，五年经验',
+              instruction: '在简介中表达对全栈方向的实践意愿',
+              reason: 'JD 偏好有全栈背景的候选人',
+            },
+          ],
+        })
+      } else {
+        content = rewrites[askCalls] ?? ''
+        askCalls++
+      }
+      route.fulfill({
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+        body: 'data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n',
+      })
+    })
+    /* 建含锚点句子的简历（建议的 original 必须能在文档中逐字定位）；IDB 需同源页面 */
+    await p2.goto(`${BASE}/#/`)
+    await p2.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 15000 })
+    const jdId = await idbAddResume(
+      p2,
+      'jd 测试',
+      '# 陈墨\n\n## 个人简介\n\n前端工程师，五年经验。\n\n## 工作经历\n\n### 某公司 · 前端工程师 | 2022\n\n- 主导营销活动搭建平台重构，首屏加载从 3.2s 降至 1.1s\n- 设计组件库 monorepo 方案',
+      'minimal'
+    )
+    await idbSetSetting(p2, 'aiApiKey', 'test-key')
+    await idbSetSetting(p2, 'aiBaseUrl', 'https://mock.local/v1')
+    /* settings 启动时读入内存 → 列表页整页刷新（同时让 useLiveQuery 拿到新简历） */
+    await p2.reload()
+    /* 走真实用户路径：列表页点卡片进入编辑器 */
+    await p2.getByText('jd 测试').click()
+    await p2.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    /* 等简历内容真正渲染（锚点文本在编辑器/预览出现），而非仅纸张就绪 */
+    await p2.getByText('主导营销活动搭建平台重构').first().waitFor({ timeout: 10000 })
+    await p2.getByRole('button', { name: 'JD 匹配' }).click()
+    const jdInput = p2.getByTestId('jd-input')
+    await jdInput.waitFor({ timeout: 5000 })
+    if (!(await p2.getByTestId('jd-run').isDisabled())) throw new Error('run should be disabled when JD empty')
+    await jdInput.fill('招聘前端工程师，要求 React、性能优化、Node.js 经验')
+    await p2.getByTestId('jd-run').click()
+    /* 报告标题在 h4 与内层 span 均出现，取 first 规避 strict violation */
+    await p2.getByText('匹配总评').first().waitFor({ timeout: 15000 })
+    await p2.getByText(/Node\.js 服务端经验未体现/).first().waitFor({ timeout: 5000 })
+
+    /* 建议一：卡片内改写 → diff → 应用（弹窗保持打开） */
+    await p2.getByTestId('jd-apply-0').click()
+    await p2.getByTestId('jd-confirm-0').waitFor({ timeout: 15000 })
+    await p2.getByTestId('jd-confirm-0').click()
+    await p2.getByText('Node.js BFF 层接口设计').first().waitFor({ timeout: 10000 })
+    if (!(await p2.getByTestId('jd-suggestion-0').textContent()).includes('已应用'))
+      throw new Error('suggestion 0 not marked applied')
+
+    /* 建议二：同一弹窗内连续处理第二条 */
+    await p2.getByTestId('jd-apply-1').click()
+    await p2.getByTestId('jd-confirm-1').waitFor({ timeout: 15000 })
+    await p2.getByTestId('jd-confirm-1').click()
+    await p2.getByText('实践 Node.js 全栈开发').first().waitFor({ timeout: 10000 })
+    await p2.getByText(/全部建议已处理/).waitFor({ timeout: 5000 })
+    ok('jd match continuous rewrite loop')
+    await jdCtx.close()
+  } catch (e) {
+    fail('jd match continuous rewrite loop', e)
+  }
+
+  try {
     /* 3. 行内规则：先清空文档（当前在 2b 创建的 pill 简历编辑器内），排除默认内容干扰 */
     const pm = page.locator('.ProseMirror')
     await pm.click()
@@ -281,7 +431,7 @@ async function main() {
   try {
     /* 6. 删除确认弹窗（替代 window.confirm） */
     await page.goto(`${BASE}/#/`)
-    await page.getByText('我的简历').waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
     const card = page.locator('[role="button"]').first()
     await card.hover()
     await card.locator('button[aria-label="文档操作"]').click()

@@ -52,6 +52,23 @@ export function nodeText(node: JSONContent): string {
   return (node.content ?? []).map(nodeText).join('')
 }
 
+/**
+ * 剥离 Markdown 语法标记（列表/有序/标题/引用前缀 + 加粗/斜体/行内码/删除线）。
+ * 用于"AI 复制的 Markdown 源码片段"与"渲染后的纯文本"之间的鲁棒匹配：
+ * AI 的锚点片段来自 Markdown 源码（带 `- `、`**` 等符号），纯文本里没有这些字符。
+ */
+export function stripMdSyntax(s: string): string {
+  return s
+    .replace(/^[ \t]{0,3}[-*+][ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}\d+\.[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+}
+
 /** 列表页摘要：旧 Markdown 或新 JSON 的第一个标题/段落 */
 export function docFirstLine(raw: string): string | null {
   const doc = parseDoc(raw)

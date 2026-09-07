@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { SpellCheck2, Loader2, RefreshCw, Check, Wand2 } from 'lucide-react'
+import { SpellCheck2, RefreshCw, Check, Wand2 } from 'lucide-react'
+import { AiProgress } from '@/components/ai/AiProgress'
 import {
   Dialog,
   DialogContent,
@@ -89,10 +90,10 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
 
         <div className="min-h-0">
           {phase === 'checking' && (
-            <div className="flex h-32 flex-col items-center justify-center gap-2 text-muted-foreground">
-              <Loader2 className="size-5 animate-spin" />
-              <p className="text-xs">正在通读整份简历…{received > 0 ? ` 已接收 ${received} 字` : ''}</p>
-            </div>
+            <AiProgress
+              label="正在通读整份简历，检查错别字、语病与表达问题…"
+              chars={received > 0 ? received : undefined}
+            />
           )}
 
           {phase === 'error' && (

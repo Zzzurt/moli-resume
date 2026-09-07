@@ -37,10 +37,12 @@ import {
   Undo2,
   Redo2,
   FileCode2,
+  ScanSearch,
   Table as TableIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createEditorExtensions, markdownToDoc, docToMarkdown } from '@/lib/editorSetup'
+import { stripMdSyntax } from '@/lib/docUtils'
 import { DragHandleLayer } from './DragHandleLayer'
 import { TableMenu } from './TableMenu'
 import { AI_MODES, type AiMode } from '@/lib/aiService'
@@ -75,6 +77,8 @@ export interface EditorHandle {
   getSelectionBlockMarkdown: () => { markdown: string; range: DocRange } | null
   /** 用 Markdown 片段替换指定文档范围（结构由片段决定） */
   replaceRangeMarkdown: (range: DocRange, md: string) => void
+  /** 按文本片段定位首个包含它的顶层块：返回该块范围与对应的 Markdown；未找到返回 null */
+  findRangeByText: (text: string) => { range: DocRange; markdown: string } | null
   getMarkdown: () => string
   setDocFromMarkdown: (md: string) => void
   /** 用 Tiptap JSON 字符串整体替换文档（版本历史恢复用），并同步 docJson */
@@ -91,6 +95,10 @@ interface TiptapEditorProps {
   /** 触发 AI 助手（润色/优化/精简/排版/提问），作用于当前选区 */
   onAiRequest: (mode: AiMode) => void
   onGrammarCheck: () => void
+  /** 页面度量（来自 Preview 测量）：状态栏实时页数与智能一页状态 */
+  pageMetrics?: { pageCount: number; density: number; smartOnePage: boolean }
+  /** 打开 JD 匹配分析（读全文，分析型不替换文档） */
+  onJdMatch?: () => void
   /** 主题色覆盖（作用到画布模板 --rs-accent）；空 = 模板默认色 */
   accentColor?: string
 }
@@ -140,7 +148,7 @@ const TPL_CLASS: Record<TemplateId, string> = {
  * - 每个顶层块绑定 data-index，供预览点击反向定位
  */
 export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function TiptapEditor(
-  { initialContent, template, saveState, checking = false, onInit, onDocChange, onAiRequest, onGrammarCheck, accentColor },
+  { initialContent, template, saveState, checking = false, onInit, onDocChange, onAiRequest, onGrammarCheck, onJdMatch, pageMetrics, accentColor },
   ref
 ) {
   // 稳定回调 ref（避免编辑器实例因闭包变化重建；赋值放 effect，不在渲染期改 ref）
@@ -516,6 +524,33 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         firstElRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
         if (boxes.length) showFlash(boxes)
       },
+      findRangeByText: (text: string) => {
+        if (!editor) return null
+        const target = text.trim()
+        if (!target) return null
+        /* 三级匹配（逐块）：
+           1. 纯文本精确包含；2. Markdown 语法剥离后包含（AI 锚点带 - / ** 等源码符号时）；
+           3. 片段首尾各截 12 字的归一化子串（AI 对原文有轻微润色时仍可定位） */
+        const norm = stripMdSyntax
+        const targetN = norm(target)
+        const headN = targetN.slice(0, 12)
+        const tailN = targetN.slice(-12)
+        let result: { range: DocRange; markdown: string } | null = null
+        editor.state.doc.forEach((node, offset) => {
+          if (result) return
+          const t = node.textContent
+          const tN = norm(t)
+          const hit =
+            t.includes(target) || tN.includes(targetN) || (targetN.length >= 24 && tN.includes(headN) && tN.includes(tailN))
+          if (hit) {
+            result = {
+              range: { from: offset, to: offset + node.nodeSize },
+              markdown: docToMarkdown({ type: 'doc', content: [node.toJSON()] }),
+            }
+          }
+        })
+        return result
+      },
       getMarkdown: () => {
         if (!editor) return ''
         return (
@@ -538,7 +573,6 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     }),
     [editor, showFlash]
   )
-
   const tplClass = TPL_CLASS[template] ?? 'tpl-minimal'
 
   // 斜杠菜单防溢出
@@ -606,6 +640,9 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
               checking ? <Loader2 className="size-3.5 animate-spin" /> : <SpellCheck2 className="size-3.5" />
             }
           />
+          {onJdMatch && (
+            <Button2 onClick={onJdMatch} label="JD 匹配" icon={<ScanSearch className="size-3.5" />} />
+          )}
           <Button2
             onClick={toggleSourceMode}
             label="源码"
@@ -667,12 +704,31 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
 
       {/* 状态栏 */}
       <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
-        <span>
+        <span className="min-w-0 truncate">
           {sourceMode
             ? '源码模式：Markdown 实时同步预览与自动保存，点「源码」切回块编辑'
             : '# 标题 · - 列表 · 1. 编号 · > 引用 · --- 分割线 · **加粗** · 直接打 Markdown 即时转换'}
         </span>
-        <span className="font-mono">{blockCount} 块</span>
+        <span className="ml-2 flex shrink-0 items-center gap-2">
+          {pageMetrics &&
+            (pageMetrics.pageCount > 1 ? (
+              <span
+                className="font-medium text-amber-600 dark:text-amber-400"
+                title={
+                  pageMetrics.smartOnePage
+                    ? '内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整'
+                    : '开启「智能一页」可自动压缩至恰好一页'
+                }
+              >
+                内容 {pageMetrics.pageCount} 页{pageMetrics.smartOnePage ? '' : ' · 可开启智能一页'}
+              </span>
+            ) : pageMetrics.smartOnePage && pageMetrics.density > 0 ? (
+              <span title="智能一页已收紧排版密度，恰好一页">已压缩至 1 页 · 密度档 {pageMetrics.density}</span>
+            ) : (
+              <span>1 页</span>
+            ))}
+          <span className="font-mono">{blockCount} 块</span>
+        </span>
       </div>
 
       {/* 悬浮工具栏（选中文本）：主行 + 可展开的更多工具行 */}

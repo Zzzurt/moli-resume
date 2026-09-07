@@ -318,6 +318,89 @@ export async function aiAssist(
   return stripFence(raw.trim())
 }
 
+/** JD 匹配分析的结构化结果 */
+export interface JdSuggestion {
+  /** 简历中逐字存在的原文片段（定位锚点，限定单个段落/条目内） */
+  original: string
+  /** 交给 AI 提问模式的改写指令 */
+  instruction: string
+  /** 建议理由（为什么这样改） */
+  reason: string
+}
+
+export interface JdReport {
+  summary: string
+  covered: string[]
+  gaps: { text: string; severity: string }[]
+  suggestions: JdSuggestion[]
+}
+
+/** JD 匹配分析：对照职位描述分析整份简历，返回结构化报告（流式） */
+export async function jdAnalyze(
+  config: AIConfig,
+  fullMarkdown: string,
+  jd: string,
+  options: { onDelta?: (partial: string) => void } = {}
+): Promise<JdReport> {
+  const system =
+    '你是一位资深招聘顾问。请对照职位描述分析用户的简历（Markdown 全文），输出 JSON 分析报告，结构如下：\n' +
+    '{"summary":"匹配总评，2~3 句话：匹配程度、最大优势、最大短板",' +
+    '"covered":["JD 中明确要求且简历已有体现的条目，注明简历中的关键证据"],' +
+    '"gaps":[{"text":"JD 要求但简历缺失或体现不足的点","severity":"严重|次要"}],' +
+    '"suggestions":[{"original":"简历中逐字存在的连续原文片段，必须限定在单个段落或列表条目内，不超过 200 字","instruction":"针对该片段的具体改写指令，交给另一个 AI 执行","reason":"这样改的理由"}]}\n' +
+    '要求：suggestions 给 2~4 条最有价值的改写建议，original 必须逐字复制简历原文（不可改写、不可跨段落），' +
+    '并优先选择不含加粗/行内代码等行内格式标记的片段（便于精确定位）；' +
+    '只依据职位描述与简历原文，不要编造简历中不存在的内容；使用中文；只输出 JSON 本身，不要代码围栏和解释。'
+  const user = `【职位描述】\n${jd.trim()}\n\n---\n\n【简历全文】\n${fullMarkdown}`
+  const raw = await chatCompletion(
+    config,
+    [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    { temperature: 0.3, firstByteMs: 60_000, idleMs: 150_000, onDelta: options.onDelta }
+  )
+  return parseJdReport(stripFence(raw.trim()))
+}
+
+function parseJdReport(raw: string): JdReport {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    const m = raw.match(/\{[\s\S]*\}/)
+    if (!m) throw aiError('PARSE', '模型返回内容无法解析为分析报告，请重试')
+    try {
+      parsed = JSON.parse(m[0])
+    } catch {
+      throw aiError('PARSE', '模型返回内容无法解析为分析报告，请重试')
+    }
+  }
+  const o = parsed as Partial<JdReport> | null
+  if (!o || typeof o.summary !== 'string') {
+    throw aiError('PARSE', '模型返回格式异常，请重试')
+  }
+  return {
+    summary: o.summary,
+    covered: Array.isArray(o.covered) ? o.covered.filter((x) => typeof x === 'string') : [],
+    gaps: Array.isArray(o.gaps)
+      ? o.gaps.filter(
+          (g): g is { text: string; severity: string } =>
+            !!g && typeof (g as { text?: unknown }).text === 'string'
+        )
+      : [],
+    suggestions: Array.isArray(o.suggestions)
+      ? o.suggestions.filter(
+          (s): s is JdSuggestion =>
+            !!s &&
+            typeof (s as JdSuggestion).original === 'string' &&
+            typeof (s as JdSuggestion).instruction === 'string' &&
+            typeof (s as JdSuggestion).reason === 'string'
+        )
+      : [],
+  }
+}
+
 /** 整份简历语法/表达检查，返回建议列表（流式接收，不设总时长限制） */
 export async function checkGrammar(
   config: AIConfig,

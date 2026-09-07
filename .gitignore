@@ -19,6 +19,8 @@ HANDOFF.md
 
 # 测试产物
 gui-test-screenshots/
+# 临时诊断脚本（跑完即删）
+scripts/diag_*_tmp.cjs
 scripts/shots/
 scripts/shots2/
 scripts/shots_font_old/
