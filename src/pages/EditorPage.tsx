@@ -6,7 +6,6 @@ import { getResume, updateResume, addSnapshot } from '@/lib/db'
 import type { ResumeSnapshot } from '@/lib/db'
 import { isTiptapDoc } from '@/lib/docUtils'
 import { docToMarkdown } from '@/lib/editorSetup'
-import { exportPaperToPdf, exportPaperToPng } from '@/lib/pdf'
 import { downloadFile, pickTextFile, titleFromFilename } from '@/lib/fileIO'
 import { TiptapEditor, type EditorHandle, type DocRange } from '@/components/editor/TiptapEditor'
 import { Preview } from '@/components/preview/Preview'
@@ -28,6 +27,7 @@ import {
 } from '@/components/ui/dialog'
 import { useSettings } from '@/hooks/useSettings'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
+import { cn } from '@/lib/utils'
 import type { AiMode } from '@/lib/aiService'
 import type { TemplateId } from '@/types'
 import { toast } from 'sonner'
@@ -77,6 +77,8 @@ export function EditorPage() {
   /** 当前 AI 助手模式 */
   const [aiMode, setAiMode] = useState<AiMode>('polish')
   const [grammarOpen, setGrammarOpen] = useState(false)
+  /** 编辑器光标所在块索引（联动预览滚动；跨块变化才更新） */
+  const [activeBlock, setActiveBlock] = useState<number | undefined>(undefined)
   /** 待确认导入的 Markdown 文件（弹窗确认后应用） */
   const [pendingImport, setPendingImport] = useState<{ name: string; text: string } | null>(null)
 
@@ -284,6 +286,8 @@ export function EditorPage() {
     if (!paper) return
     setExporting(true)
     try {
+      // 按需加载导出模块（html2canvas + jsPDF 约 550KB），不进首屏
+      const { exportPaperToPdf } = await import('@/lib/pdf')
       await exportPaperToPdf(paper, title.trim() || '简历')
       toast.success('PDF 已导出')
     } catch (e) {
@@ -319,6 +323,7 @@ export function EditorPage() {
     if (!paper) return
     setExporting(true)
     try {
+      const { exportPaperToPng } = await import('@/lib/pdf')
       await exportPaperToPng(paper, `${title.trim() || '简历'}-长图`)
       toast.success('长图 PNG 已导出')
     } catch (e) {
@@ -333,6 +338,30 @@ export function EditorPage() {
     const md = editorHandleRef.current?.getMarkdown() ?? ''
     downloadFile(md, `${title.trim() || 'resume'}.md`, 'text/markdown')
     toast.success('Markdown 已导出')
+  }
+
+  /* ---------- 文字版 PDF（打印对话框，矢量文字可复制/可搜索） ---------- */
+  const handleExportPrintPdf = async () => {
+    const paper = paperRef.current
+    if (!paper) return
+    try {
+      const { printPaperToPdf } = await import('@/lib/pdf')
+      await printPaperToPdf(paper, title.trim() || '简历')
+      /* window.print() 同步阻塞，走到这里即对话框已关闭 */
+    } catch (e) {
+      toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
+  }
+
+  /* ---------- Word（.docx）导出（docx 库较大，按需加载） ---------- */
+  const handleExportDocx = async () => {
+    try {
+      const { exportResumeDocx } = await import('@/lib/docx')
+      await exportResumeDocx(docJson ?? '', title.trim() || '简历')
+      toast.success('Word 已导出')
+    } catch (e) {
+      toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
   }
 
   const handleImportMd = async () => {
@@ -395,6 +424,22 @@ export function EditorPage() {
     [updateSetting]
   )
 
+  /* ---------- 窄屏适配：lg 以下改为「编辑 / 预览」标签页切换（分栏在窄屏不可用） ---------- */
+  const [isNarrow, setIsNarrow] = useState(
+    () => window.matchMedia('(max-width: 1023.98px)').matches
+  )
+  const [mobileView, setMobileView] = useState<'edit' | 'preview'>('edit')
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1023.98px)')
+    const onChange = (e: MediaQueryListEvent) => {
+      setIsNarrow(e.matches)
+      // 从小屏切回宽屏时保留编辑视图，避免预览先入为主
+      if (!e.matches) setMobileView('edit')
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
   if (Number.isNaN(resumeId) || missing) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -416,6 +461,8 @@ export function EditorPage() {
         onExportPdf={handleExportPdf}
         onExportPng={() => void handleExportPng()}
         onExportMd={handleExportMd}
+        onExportPrintPdf={() => void handleExportPrintPdf()}
+        onExportDocx={() => void handleExportDocx()}
         onImportMd={() => void handleImportMd()}
         exporting={exporting}
         smartOnePage={settings.smartOnePage}
@@ -426,8 +473,38 @@ export function EditorPage() {
         onShortcuts={() => setShortcutsOpen(true)}
       />
 
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0" style={{ width: `${editorRatio * 100}%` }}>
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* 窄屏：编辑/预览标签页切换（lg 及以上隐藏） */}
+        {isNarrow && (
+          <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b bg-card">
+            {(
+              [
+                ['edit', '编辑'],
+                ['preview', '预览'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                data-testid={`mobile-view-${k}`}
+                className={
+                  'rounded-md px-5 py-1.5 text-xs font-medium transition-colors ' +
+                  (mobileView === k
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-muted-foreground hover:bg-accent')
+                }
+                onClick={() => setMobileView(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div
+          className={cn('min-w-0', isNarrow && mobileView !== 'edit' && 'hidden')}
+          style={{ width: isNarrow ? '100%' : `${editorRatio * 100}%` }}
+        >
           {initialContent !== null && (
             <TiptapEditor
               key={resumeId /* 切换简历时强制重建编辑器：新内容 + 重置撤销历史 */}
@@ -459,13 +536,16 @@ export function EditorPage() {
               }}
               pageMetrics={pageMetrics}
               accentColor={settings.accentColor}
+              onActiveBlockChange={setActiveBlock}
+              layoutClass={settings.layout === 'standard' ? '' : `layout-${settings.layout}`}
             />
           )}
         </div>
 
-        <Resizer ratio={editorRatio} onResize={handleResize} />
+        {!isNarrow && <Resizer ratio={editorRatio} onResize={handleResize} />}
 
-        <div className="min-w-0 flex-1 py-6">
+        {/* 预览面板：宽屏始终显示；窄屏仅「预览」标签下显示 */}
+        <div className={cn('min-w-0 flex-1 py-6', isNarrow && mobileView !== 'preview' && 'hidden')}>
           <Preview
             content={docJson ?? ''}
             template={template}
@@ -477,6 +557,8 @@ export function EditorPage() {
             onPhotoPosChange={handlePhotoPosChange}
             paperRef={paperRef}
             onLineClick={handleLineClick}
+            activeIndex={activeBlock}
+            layoutClass={settings.layout === 'standard' ? '' : `layout-${settings.layout}`}
             smartOnePage={settings.smartOnePage}
             accentColor={settings.accentColor}
             onMetrics={(m) => {

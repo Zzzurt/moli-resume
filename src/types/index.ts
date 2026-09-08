@@ -26,17 +26,35 @@ export interface Resume {
 
 export type ThemeMode = 'light' | 'dark'
 
+/** 手动排版档位：标准 / 紧凑 / 宽松（用户固定偏好；智能一页在其上自动收紧） */
+export type LayoutMode = 'standard' | 'compact' | 'loose'
+
 export interface AppSettings {
   theme: ThemeMode
   aiBaseUrl: string
   aiApiKey: string
   aiModel: string
+  /** AI 模型多配置档（保存的多套 Base URL / Key / 模型） */
+  aiProfiles?: AiProfile[]
+  /** 当前启用的 AI 配置档 id */
+  activeProfileId?: string
   /** 编辑器/预览 分栏占比（左侧，0-1） */
   splitRatio: number
   /** 智能一页：内容超一页时自动缩放至恰好一页 */
   smartOnePage: boolean
   /** 主题色覆盖（作用到模板的 --rs-accent）；空 = 跟随模板默认 */
   accentColor?: string
+  /** 手动排版档位 */
+  layout: LayoutMode
+}
+
+/** AI 模型配置档 */
+export interface AiProfile {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  model: string
 }
 
 /** 语法检查返回的单条建议 */
@@ -125,6 +143,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   aiApiKey: '',
   aiModel: 'qwen-plus',
+  aiProfiles: [],
   splitRatio: 0.42,
   smartOnePage: true,
+  layout: 'standard',
 }

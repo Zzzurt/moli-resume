@@ -88,6 +88,41 @@ export async function exportPaperToPng(paperEl: HTMLElement, filename: string): 
   URL.revokeObjectURL(url)
 }
 
+/**
+ * 文字版 PDF / 打印：借助浏览器原生打印对话框输出**矢量文字** PDF
+ * （可选中、可复制、可搜索，ATS 解析友好），与位图导出互补。
+ *
+ * 实现：把纸张克隆到 body 下独立的 [data-print-sheet] 容器（原纸张仍在预览中，
+ * 不动用户界面），配合 @media print 规则隐藏应用、只打印简历；打印对话框
+ * 关闭后清理克隆容器。window.print() 在主流浏览器中同步阻塞至对话框关闭，
+ * 故 try/finally 还原是可靠的。
+ */
+export async function printPaperToPdf(paperEl: HTMLElement, title: string): Promise<void> {
+  const host = document.createElement('div')
+  host.setAttribute('data-print-sheet', 'true')
+  const clone = paperEl.cloneNode(true) as HTMLElement
+  // 隐藏预览专用元素（分页线/照片手柄等），与位图导出同一套 .exporting 规则
+  clone.classList.add('exporting')
+  clone.style.minHeight = '1123px'
+  clone.style.height = 'auto'
+  clone.style.margin = '0 auto'
+  // 智能一页内容层恢复线性布局（打印页原生按内容分页）
+  clone.querySelectorAll<HTMLElement>('.rs-scale-layer').forEach((el) => {
+    el.style.transform = 'none'
+    el.style.width = 'auto'
+  })
+  host.appendChild(clone)
+  document.body.appendChild(host)
+  const prevTitle = document.title
+  document.title = title
+  try {
+    window.print()
+  } finally {
+    host.remove()
+    document.title = prevTitle
+  }
+}
+
 function ensureExt(name: string, ext: string): string {
   const lower = ext.toLowerCase()
   return name.toLowerCase().endsWith(lower) ? name : `${name}${ext}`

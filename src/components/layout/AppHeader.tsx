@@ -8,6 +8,7 @@ import {
   FileUp,
   FileText,
   Printer,
+  FileType2,
   MoreHorizontal,
   Sun,
   Moon,
@@ -59,6 +60,10 @@ interface AppHeaderProps {
   onExportPdf: () => void
   onExportPng?: () => void
   onExportMd: () => void
+  /** 文字版 PDF（浏览器打印对话框，矢量文字可复制/可搜索） */
+  onExportPrintPdf?: () => void
+  /** Word（.docx）结构化导出 */
+  onExportDocx?: () => void
   onImportMd: () => void
   exporting?: boolean
   /** 智能一页开关（内容超一页自动缩放至恰好一页） */
@@ -81,6 +86,8 @@ export function AppHeader({
   onExportPdf,
   onExportPng,
   onExportMd,
+  onExportPrintPdf,
+  onExportDocx,
   onImportMd,
   exporting,
   smartOnePage = true,
@@ -218,6 +225,16 @@ export function AppHeader({
               {onExportPng && (
                 <DropdownMenuItem disabled={exporting} onClick={onExportPng}>
                   <FileImage className="size-4" /> 导出长图 PNG（多页拼接）
+                </DropdownMenuItem>
+              )}
+              {onExportPrintPdf && (
+                <DropdownMenuItem onClick={onExportPrintPdf}>
+                  <FileType2 className="size-4" /> 导出文字版 PDF（可复制搜索）
+                </DropdownMenuItem>
+              )}
+              {onExportDocx && (
+                <DropdownMenuItem onClick={onExportDocx}>
+                  <FileText className="size-4" /> 导出 Word（.docx）
                 </DropdownMenuItem>
               )}
               {onHistory && (

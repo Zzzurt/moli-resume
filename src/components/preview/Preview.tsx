@@ -46,6 +46,10 @@ interface PreviewProps {
   paperRef: RefObject<HTMLDivElement>
   /** 点击预览块时回调对应块索引（与编辑器 data-index 对应） */
   onLineClick?: (index: number) => void
+  /** 编辑器光标所在块索引：变化时滚动预览到对应块（编辑→预览联动） */
+  activeIndex?: number
+  /** 手动排版档位类（layout-loose / layout-compact / 空 = 标准） */
+  layoutClass?: string
   /** 智能一页：内容超一页时自动缩放至恰好一页 */
   smartOnePage?: boolean
   /** 页面度量上报（状态栏实时页数 / 导出超页检测）：paperHeight 或密度变化时触发 */
@@ -73,6 +77,8 @@ export function Preview({
   onPhotoPosChange,
   paperRef,
   onLineClick,
+  activeIndex,
+  layoutClass = '',
   smartOnePage = true,
   onMetrics,
   accentColor,
@@ -139,10 +145,19 @@ export function Preview({
     return () => ro.disconnect()
   }, [])
 
-  /* 智能一页 v2：先分级收紧排版密度（字号不动），密度压满仍放不下才轻度缩放
-     （不低于 MIN_FIT_SCALE），再多就放弃缩放、保留分页。测量在固定纸宽的分身上
-     进行（宽度恒定 → 无"缩放→重排→再缩放"反馈循环导致页面横跳）。
-     密度升降档带迟滞：只有低档实测放不下时才保持高档，避免临界内容来回抖动 */
+  /** 上次内容变化时间戳：编辑静默期判定——打字期间不提交排版决策，停笔后再收敛 */
+  const lastContentAtRef = useRef(Date.now())
+  useEffect(() => {
+    lastContentAtRef.current = Date.now()
+  }, [content])
+
+  /* 智能一页 v4：同步扫档 + 防抽搐四件套
+   1) scale 离散化（2% 步进，floor）：内容微变不再触发缩放蠕变
+   2) fit↔overflow 迟滞带：进入 fit 需 ≥ MIN_FIT_SCALE，退出需再低 3%，
+      避免 0.85 边界内容编辑时单页/双页横跳
+   3) 编辑静默期（1s）+ 提交防抖：打字期间预览完全静止，停笔后一次收敛
+   4) 稳态快速路径：决策不变时零扫档，切断「扫档中间尺寸变化→RO→再扫档」
+      的回声循环 */
   useEffect(() => {
     const el = measureRef.current
     if (!smartOnePage || !el) {
@@ -153,50 +168,103 @@ export function Preview({
       setFitState({ scale: 1, fit: false, overflow: false })
       return
     }
-    const measure = () => {
-      const naturalH = el.scrollHeight
-      const last = lastMeasureRef.current
-      // RO 回声：同内容同密度不重复决策
-      if (last && last.h === naturalH && last.d === density) return
-      // 注意：不因内容变化清空缓存——过期的「低档通过」记录会被重测纠正，
-      // 过期的「低档失败」记录只会让高档多留一档（保守方向），整体仍然收敛
-      lastMeasureRef.current = { h: naturalH, d: density }
-      heightsRef.current[density] = naturalH
+    const DENSITY_TO_CLASS: Record<Density, string> = { 0: '', 1: 'rs-compact', 2: 'rs-tight' }
+    const DENSITY_CLASSES = ['rs-compact', 'rs-tight']
+    const SCALE_STEP = 0.02
+    /** 退出 fit 的阈值：比进入低一档，形成迟滞带（区间内维持原状态） */
+    const EXIT_FIT = MIN_FIT_SCALE - 0.03
 
-      if (naturalH <= A4_H) {
-        const lower = (density - 1) as Density
-        const lowerH = heightsRef.current[lower]
-        if (density > 0 && (lowerH === undefined || lowerH <= A4_H)) {
-          // 不变量：fit/scale 只属于最高密度档，任何换档先重置缩放
-          setFitState({ scale: 1, fit: false, overflow: false })
-          setDensity(lower)
-          return
+    type FitState = { scale: number; fit: boolean; overflow: boolean }
+    let lastDecision: { d: Density; fit: FitState } | null = null
+    let commitTimer: number | undefined
+    /** 编辑静默期：内容停止变化超过该时长后才提交决策（打字中预览静止） */
+    const EDIT_QUIET_MS = 1000
+    const sameDecision = (a: { d: Density; fit: FitState }, b: { d: Density; fit: FitState }) =>
+      a.d === b.d && a.fit.scale === b.fit.scale && a.fit.fit === b.fit.fit && a.fit.overflow === b.fit.overflow
+
+    const decide = () => {
+      /* 快速路径：分身已停在最终档且高度未变 → 决策必然相同。
+         必须在改 class 之前判定，否则扫档的中间尺寸变化会再次触发 RO（回声循环） */
+      if (lastDecision) {
+        const cur: Density = el.classList.contains('rs-tight') ? 2 : el.classList.contains('rs-compact') ? 1 : 0
+        const lm = lastMeasureRef.current
+        if (cur === lastDecision.d && lm && lm.d === cur && el.scrollHeight === lm.h) return
+      }
+
+      let bestD: Density = 0
+      let bestFit: FitState = { scale: 1, fit: false, overflow: false }
+      let overflow = false
+      for (let d = 0 as Density; d <= 2; d = (d + 1) as Density) {
+        el.classList.remove(...DENSITY_CLASSES)
+        const cls = DENSITY_TO_CLASS[d]
+        if (cls) el.classList.add(cls)
+        const h = el.scrollHeight /* 强制同步 reflow */
+        heightsRef.current[d] = h
+        if (h <= A4_H) {
+          bestD = d
+          bestFit = { scale: 1, fit: false, overflow: false }
+          break
         }
-        setFitState({ scale: 1, fit: false, overflow: false })
-        return
-      }
-      if (density < 2) {
-        setFitState({ scale: 1, fit: false, overflow: false })
-        setDensity((density + 1) as Density)
-        return
-      }
-      const s = Math.min(1, (A4_H - 2) / naturalH)
-      if (s >= MIN_FIT_SCALE) {
-        setFitState({ scale: s, fit: true, overflow: false })
-      } else {
-        setFitState({ scale: 1, fit: false, overflow: true })
-        if (!wasOverflowRef.current) {
-          toast.info('内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整', {
-            id: 'onepage-fallback',
-          })
+        if (d === 2) {
+          const s = Math.min(1, (A4_H - 2) / h)
+          /* 迟滞：进入 fit 用 ENTER 阈值；已在 fit 中则宽限到 EXIT 才放弃 */
+          const enterOk = s >= MIN_FIT_SCALE
+          const stayOk = !!lastDecision?.fit.fit && s >= EXIT_FIT
+          if (enterOk || stayOk) {
+            /* floor 到步进：永远 ≤ 实际所需（不会溢出），步进内的变化被吸收 */
+            const stepped = Math.floor(s / SCALE_STEP) * SCALE_STEP
+            bestFit = { scale: stepped, fit: true, overflow: false }
+          } else {
+            bestFit = { scale: 1, fit: false, overflow: true }
+            overflow = true
+          }
+          bestD = 2
         }
       }
+      lastMeasureRef.current = { h: heightsRef.current[bestD] ?? el.scrollHeight, d: bestD }
+
+      const decision = { d: bestD, fit: bestFit }
+      if (lastDecision && sameDecision(lastDecision, decision)) return
+
+      /* 提交条件：防抖 350ms + 编辑静默 1s 双重满足。
+         打字期间每次内容变化都会重扫并顺延本定时器——预览完全静止，
+         停笔后 1.35s 内一次收敛到位 */
+      const scheduleCommit = () => {
+        window.clearTimeout(commitTimer)
+        commitTimer = window.setTimeout(() => {
+          if (Date.now() - lastContentAtRef.current < EDIT_QUIET_MS) {
+            scheduleCommit() /* 仍在编辑：顺延复查 */
+            return
+          }
+          if (lastDecision && sameDecision(lastDecision, decision)) return
+          lastDecision = decision
+          if (overflow && !wasOverflowRef.current) {
+            wasOverflowRef.current = true
+            toast.info('内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整', {
+              id: 'onepage-fallback',
+            })
+          } else if (!overflow) {
+            wasOverflowRef.current = false
+          }
+          setFitState(decision.fit)
+          setDensity(decision.d)
+        }, 350)
+      }
+      scheduleCommit()
     }
-    const ro = new ResizeObserver(measure)
+
+    const ro = new ResizeObserver(decide)
     ro.observe(el)
-    measure()
-    return () => ro.disconnect()
-  }, [smartOnePage, density])
+    decide()
+    /* 中文字体分片按需加载完成后行盒高度可能微调：重扫一次（走防抖提交） */
+    const onFontsDone = () => decide()
+    document.fonts?.addEventListener('loadingdone', onFontsDone)
+    return () => {
+      ro.disconnect()
+      window.clearTimeout(commitTimer)
+      document.fonts?.removeEventListener('loadingdone', onFontsDone)
+    }
+  }, [smartOnePage])
 
   /** 纸张实际高度（分页线数量）：
      - 适配成功（缩放或密度收紧后恰好一页）：A4
@@ -237,13 +305,29 @@ export function Preview({
     [onLineClick]
   )
 
+  /* 编辑→预览联动：光标跨块时滚动预览到对应块。
+     用 getBoundingClientRect 计算偏移（已含纸张 transform scale），
+     最近可见块内精确对齐；块窄时按阈值就近吸附 */
+  useEffect(() => {
+    if (activeIndex === undefined || activeIndex < 0) return
+    const vp = viewportRef.current
+    if (!vp) return
+    const el = vp.querySelector<HTMLElement>(`.resume-paper [data-index="${activeIndex}"]`)
+    if (!el) return
+    const vpRect = vp.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    const below = vpRect.bottom - 24
+    const above = vpRect.top
+    vp.scrollTop += Math.max(0, elRect.top - above - 16) - Math.max(0, below - elRect.bottom)
+  }, [activeIndex])
+
   /* 主题色覆盖：必须内联在 tpl-* 元素本身——tpl-* 类在自身上定义了 --rs-accent，
      挂在祖先上的覆盖会被近处定义赢过 */
   const accentStyle = accentColor ? ({ ['--rs-accent']: accentColor } as CSSProperties) : undefined
 
   const renderBody = () =>
     isSidebarTemplate ? (
-      <div className={`tpl-${template} rs-body ${densityClass}`} style={accentStyle}>
+      <div className={`tpl-${template} rs-body ${densityClass} ${layoutClass}`.trim()} style={accentStyle}>
         <div className="rs-sidebar">
           <PhotoSpot
             variant="sidebar"
@@ -262,7 +346,7 @@ export function Preview({
       </div>
     ) : (
       <div
-        className={(SINGLE_COL_CLASS[template] ?? 'tpl-minimal') + (densityClass ? ` ${densityClass}` : '')}
+        className={(SINGLE_COL_CLASS[template] ?? 'tpl-minimal') + (densityClass ? ` ${densityClass}` : '') + (layoutClass ? ` ${layoutClass}` : '')}
         style={accentStyle}
       >
         <PhotoSpot
@@ -283,6 +367,7 @@ export function Preview({
       ref={viewportRef}
       className="relative h-full overflow-auto bg-muted/40 scrollbar-thin dark:bg-black/30"
       onClick={handleClick}
+      data-testid="preview-viewport"
     >
       {/* 智能一页测量分身：固定纸宽渲染同一份内容（含当前密度档）；隐藏、不可交互、不在导出纸张内。
           关键在于它的宽度恒定，测得的高度不随缩放变化，消除反馈循环 */}
@@ -312,9 +397,11 @@ export function Preview({
             style={{ minHeight: A4_H, height: fitActive ? A4_H : undefined }}
             data-testid="resume-paper"
           >
-            {/* 智能一页内容层：scale 压缩高度，宽度反向放大保证铺满纸面 */}
+            {/* 智能一页内容层：scale 压缩高度，宽度反向放大保证铺满纸面。
+                rs-scale-layer 供导出/打印清除缩放（克隆快照或 window.print 恢复线性布局） */}
             <div
               ref={contentRef}
+              className="rs-scale-layer"
               style={{
                 transform: fitActive ? `scale(${contentFit.scale})` : undefined,
                 transformOrigin: 'top left',

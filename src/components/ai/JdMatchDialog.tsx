@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   ScanSearch,
@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   CircleCheck,
   CircleCheckBig,
+  Square,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -19,7 +20,14 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useSettings } from '@/hooks/useSettings'
-import { aiAssist, aiErrorMessage, jdAnalyze, type JdReport, type JdSuggestion } from '@/lib/aiService'
+import {
+  aiAssist,
+  aiErrorMessage,
+  isAbortedError,
+  jdAnalyze,
+  type JdReport,
+  type JdSuggestion,
+} from '@/lib/aiService'
 import type { DocRange } from '@/components/editor/TiptapEditor'
 import { cn } from '@/lib/utils'
 import { AiProgress } from '@/components/ai/AiProgress'
@@ -84,15 +92,22 @@ export function JdMatchDialog({
   const [loading, setLoading] = useState(false)
   const [report, setReport] = useState<JdReport | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** 用户停止分析（区别于出错） */
+  const [stopped, setStopped] = useState(false)
   /** 流式接收中的实时内容 */
   const [live, setLive] = useState<string | null>(null)
   /** 每条建议的改写状态（连续处理：应用一条后其余卡片保持可用） */
   const [cards, setCards] = useState<Record<number, CardState>>({})
+  /** 当前分析的中止控制器（「停止」按钮触发 abort） */
+  const abortRef = useRef<AbortController | null>(null)
 
   const run = async () => {
     if (!jd.trim()) return
+    const ac = new AbortController()
+    abortRef.current = ac
     setLoading(true)
     setError(null)
+    setStopped(false)
     setLive(null)
     setReport(null)
     setCards({})
@@ -101,12 +116,18 @@ export function JdMatchDialog({
         { baseUrl: settings.aiBaseUrl, apiKey: settings.aiApiKey, model: settings.aiModel },
         fullMarkdown,
         jd,
-        { onDelta: (partial) => setLive(partial) }
+        { onDelta: (partial) => setLive(partial), signal: ac.signal }
       )
       setReport(r)
     } catch (e) {
-      setError(aiErrorMessage(e))
+      if (isAbortedError(e)) {
+        setStopped(true)
+        setLive(null)
+      } else {
+        setError(aiErrorMessage(e))
+      }
     } finally {
+      abortRef.current = null
       setLoading(false)
     }
   }
@@ -115,13 +136,15 @@ export function JdMatchDialog({
     if (open) {
       setReport(null)
       setError(null)
+      setStopped(false)
       setLive(null)
       setCards({})
       /* 保留上次输入的 JD，便于微调后重新分析 */
     }
   }, [open])
 
-  const hasRun = report !== null || loading || live !== null
+  // stopped 也算已运行：停止后停留在报告区展示「已停止分析」，而非退回输入态
+  const hasRun = report !== null || loading || live !== null || stopped
 
   const rewrite = async (i: number, s: JdSuggestion) => {
     if (!onLocateBlock) return
@@ -223,6 +246,13 @@ export function JdMatchDialog({
                   <RefreshCw className="size-3.5" /> 重试
                 </Button>
               </div>
+            ) : stopped ? (
+              <div className="flex flex-col items-center gap-2 p-4 text-center">
+                <p className="text-xs text-muted-foreground">已停止分析</p>
+                <Button size="sm" variant="outline" onClick={() => void run()}>
+                  <RefreshCw className="size-3.5" /> 重新分析
+                </Button>
+              </div>
             ) : loading ? (
               /* 连接阶段整块占位（此前是空白真空档）；流式开始后进度条转紧凑模式随内容滚动 */
               live ? (
@@ -231,9 +261,27 @@ export function JdMatchDialog({
                   <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
                     {live}
                   </p>
+                  <div className="mt-2 flex justify-center">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => abortRef.current?.abort()}
+                    >
+                      <Square className="size-3.5" /> 停止
+                    </Button>
+                  </div>
                 </div>
               ) : (
-                <AiProgress label="正在对照职位描述通读简历…" />
+                <div className="flex flex-col items-center gap-3">
+                  <AiProgress label="正在对照职位描述通读简历…" />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => abortRef.current?.abort()}
+                  >
+                    <Square className="size-3.5" /> 停止
+                  </Button>
+                </div>
               )
             ) : report ? (
               <div className="max-h-[58vh] overflow-auto pr-1 scrollbar-thin">

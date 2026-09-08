@@ -3,6 +3,7 @@ import { Toaster } from 'sonner'
 import { ListPage } from './pages/ListPage'
 import { EditorPage } from './pages/EditorPage'
 import { SettingsProvider } from './hooks/useSettings'
+import { ErrorBoundary } from './components/ErrorBoundary'
 
 /**
  * :id 变化时强制重挂载编辑器。
@@ -28,7 +29,9 @@ const router = createHashRouter([
 export default function App() {
   return (
     <SettingsProvider>
-      <RouterProvider router={router} />
+      <ErrorBoundary>
+        <RouterProvider router={router} />
+      </ErrorBoundary>
       <Toaster position="top-center" richColors />
     </SettingsProvider>
   )

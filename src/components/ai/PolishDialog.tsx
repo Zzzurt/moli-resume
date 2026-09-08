@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Sparkles, RefreshCw, Loader2, ArrowRight, Send } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Sparkles, RefreshCw, Loader2, ArrowRight, Send, Square } from 'lucide-react'
 import { AiProgress } from '@/components/ai/AiProgress'
 import { lineParts, DiffLines } from '@/components/ai/DiffLines'
 import {
@@ -12,7 +12,13 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useSettings } from '@/hooks/useSettings'
-import { aiErrorMessage, aiAssist, aiModeTitle, type AiMode } from '@/lib/aiService'
+import {
+  aiErrorMessage,
+  aiAssist,
+  aiModeTitle,
+  isAbortedError,
+  type AiMode,
+} from '@/lib/aiService'
 import { toast } from 'sonner'
 
 interface PolishDialogProps {
@@ -50,14 +56,21 @@ export function PolishDialog({
   const [instruction, setInstruction] = useState('')
   /** 流式接收中的实时内容 */
   const [live, setLive] = useState<string | null>(null)
+  /** 用户停止且无任何生成内容（有部分内容时直接作为结果展示） */
+  const [stopped, setStopped] = useState(false)
+  /** 当前生成的中止控制器（「停止」按钮触发 abort） */
+  const abortRef = useRef<AbortController | null>(null)
 
   const run = useCallback(async () => {
     if (mode === 'ask' && !instruction.trim()) {
       setError('请先输入处理指令')
       return
     }
+    const ac = new AbortController()
+    abortRef.current = ac
     setLoading(true)
     setError(null)
+    setStopped(false)
     setLive(null)
     try {
       const polished = await aiAssist(
@@ -65,20 +78,28 @@ export function PolishDialog({
         mode,
         original,
         instruction,
-        { onDelta: (partial) => setLive(partial) }
+        { onDelta: (partial) => setLive(partial), signal: ac.signal }
       )
       setResult(polished)
+      // 中止时已生成的部分会作为结果返回：提示用户结果不完整
+      if (ac.signal.aborted) toast.info('已停止生成，保留已生成的部分')
     } catch (e) {
-      setError(aiErrorMessage(e))
+      if (isAbortedError(e)) setStopped(true)
+      else setError(aiErrorMessage(e))
     } finally {
+      abortRef.current = null
       setLoading(false)
     }
   }, [mode, original, instruction, settings])
+
+  /** 停止当前生成 */
+  const stop = () => abortRef.current?.abort()
 
   useEffect(() => {
     if (open) {
       setResult(null)
       setError(null)
+      setStopped(false)
       setInstruction(mode === 'ask' ? (initialInstruction ?? '') : '')
       setLive(null)
       // 提问模式不自动执行（等用户确认/修改指令），其余模式自动跑
@@ -205,6 +226,13 @@ export function PolishDialog({
                   <RefreshCw className="size-3.5" /> 重试
                 </Button>
               </div>
+            ) : stopped ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
+                <p className="text-xs text-muted-foreground">已停止生成</p>
+                <Button size="sm" variant="outline" onClick={() => void run()}>
+                  <RefreshCw className="size-3.5" /> 重新生成
+                </Button>
+              </div>
             ) : parts ? (
               <DiffLines
                 parts={parts}
@@ -216,6 +244,11 @@ export function PolishDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:gap-0">
+          {loading && (
+            <Button variant="outline" onClick={stop}>
+              <Square className="size-3.5" /> 停止
+            </Button>
+          )}
           {mode !== 'ask' && (
             <Button
               variant="outline"

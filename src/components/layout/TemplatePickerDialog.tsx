@@ -1,78 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
-import type { JSONContent } from '@tiptap/react'
 import { Check } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { parseDoc, splitSidebarNodes, topNodes } from '@/lib/docUtils'
-import { DocBlocks } from '@/components/preview/DocRenderer'
+import { ResumeThumb } from '@/components/ResumeThumb'
 import { TEMPLATES, type TemplateId } from '@/types'
 import { cn } from '@/lib/utils'
-
-/** A4 @ 96dpi 宽（与 Preview 一致） */
-const A4_W = 794
-
-/**
- * 模板实时缩放卡片：把当前文档按模板 t 渲染成 A4 整页，等比缩进卡片。
- * 与静态快照不同——卡片反映用户真实内容与当前主题色，选模板即所见。
- * 缩放方式与 Preview 相同（固定纸宽 + transform scale），容器按 A4 比例
- * 裁切出"恰好一页"的缩略；不做智能一页密度分级（预览面板不需要）。
- */
-function TemplateThumb({
-  template,
-  doc,
-  accentColor,
-}: {
-  template: TemplateId
-  doc: JSONContent | null
-  accentColor?: string
-}) {
-  const boxRef = useRef<HTMLDivElement>(null)
-  const [scale, setScale] = useState(0)
-
-  /* 卡片宽度由网格决定 → ResizeObserver 实时算缩放比（卡宽/A4 宽） */
-  useEffect(() => {
-    const el = boxRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => setScale(el.clientWidth / A4_W))
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  const isSidebar = template === 'modern' || template === 'sleek'
-  const split = useMemo(
-    () => (isSidebar && doc ? splitSidebarNodes(doc) : null),
-    [doc, isSidebar]
-  )
-  /* 主题色覆盖必须内联在 tpl-* 元素本身（与 Preview 同理） */
-  const accentStyle = accentColor ? ({ ['--rs-accent']: accentColor } as CSSProperties) : undefined
-
-  return (
-    <div ref={boxRef} className="relative aspect-[210/297] w-full overflow-hidden bg-white">
-      {scale > 0 && (
-        <div
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-0 origin-top-left"
-          style={{ width: A4_W, transform: `scale(${scale})` }}
-        >
-          {isSidebar && split ? (
-            <div className={`tpl-${template} rs-body`} style={accentStyle}>
-              <div className="rs-sidebar">
-                <DocBlocks nodes={split.sidebar} startIndex={0} />
-              </div>
-              <div className="rs-main">
-                <DocBlocks nodes={split.main} startIndex={0} />
-              </div>
-            </div>
-          ) : (
-            <div className={`tpl-${template}`} style={accentStyle}>
-              <DocBlocks nodes={doc ? topNodes(doc) : []} startIndex={0} />
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 interface TemplatePickerDialogProps {
   open: boolean
@@ -98,8 +28,6 @@ export function TemplatePickerDialog({
   accentColor,
   onSelect,
 }: TemplatePickerDialogProps) {
-  const doc = useMemo(() => parseDoc(content), [content])
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto scrollbar-thin">
@@ -126,7 +54,7 @@ export function TemplatePickerDialog({
                   : 'border-border hover:border-primary/60'
               )}
             >
-              <TemplateThumb template={t.id} doc={doc} accentColor={accentColor} />
+              <ResumeThumb template={t.id} content={content} accentColor={accentColor} />
               <div className="border-t bg-card px-2.5 py-2">
                 <div className="flex items-center gap-1.5">
                   <span className={cn('size-2 shrink-0 rounded-[3px]', t.dotClass)} />

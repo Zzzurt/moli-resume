@@ -9,6 +9,8 @@ import {
   PlugZap,
   Loader2,
   Check,
+  BookMarked,
+  Trash2,
 } from 'lucide-react'
 import {
   Dialog,
@@ -26,12 +28,21 @@ import { useSettings } from '@/hooks/useSettings'
 import { chatCompletion, aiErrorMessage } from '@/lib/aiService'
 import { exportBackup, importBackup, type BackupFile } from '@/lib/db'
 import { downloadFile, parseJson, pickTextFile } from '@/lib/fileIO'
+import type { AiProfile, LayoutMode } from '@/types'
 import { toast } from 'sonner'
+import { cn } from '@/lib/utils'
 
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
+
+/** 排版档位选项 */
+const LAYOUT_OPTIONS: { id: LayoutMode; label: string; desc: string }[] = [
+  { id: 'standard', label: '标准', desc: '模板默认' },
+  { id: 'compact', label: '紧凑', desc: '页边距/行距收紧，单页容纳更多' },
+  { id: 'loose', label: '宽松', desc: '更松的节奏与更大的字距' },
+]
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { settings, update } = useSettings()
@@ -45,6 +56,38 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     baseUrl: settings.aiBaseUrl,
     apiKey: settings.aiApiKey,
     model: settings.aiModel,
+  }
+
+  /* ---------- AI 多配置档：保存 / 切换 / 删除 ---------- */
+  const profiles: AiProfile[] = settings.aiProfiles ?? []
+  const activeProfile = profiles.find((p) => p.id === settings.activeProfileId)
+
+  /** 保存当前输入：命中已选配置则更新之，否则新建并以当前输入为底 */
+  const saveProfile = () => {
+    const profileId = activeProfile?.id ?? `p-${Date.now()}`
+    const name = activeProfile?.name ?? `配置 ${profiles.length + 1}`
+    update('aiProfiles', [
+      ...profiles.filter((p) => p.id !== profileId),
+      { id: profileId, name, baseUrl: settings.aiBaseUrl, apiKey: settings.aiApiKey, model: settings.aiModel },
+    ])
+    update('activeProfileId', profileId)
+    toast.success(activeProfile ? '已更新配置' : '已保存为新配置，可随时切换')
+  }
+
+  const applyProfile = (p: AiProfile) => {
+    update('aiBaseUrl', p.baseUrl)
+    update('aiApiKey', p.apiKey)
+    update('aiModel', p.model)
+    update('activeProfileId', p.id)
+    setTestOk(false)
+    toast.success(`已切换到「${p.name}」`)
+  }
+
+  const deleteProfile = () => {
+    if (!activeProfile) return
+    update('aiProfiles', profiles.filter((p) => p.id !== activeProfile.id))
+    update('activeProfileId', undefined)
+    toast.success(`已删除配置「${activeProfile.name}」（当前字段保留）`)
   }
 
   const testConnection = async () => {
@@ -113,6 +156,60 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <h3 className="flex items-center gap-1.5 text-sm font-semibold">
             <Bot className="size-4 text-primary" /> AI 模型
           </h3>
+          {/* 多配置档：切换已存配置 / 保存当前 / 删除选中 */}
+          <div className="flex items-center gap-1.5">
+            {profiles.length > 0 ? (
+              <select
+                aria-label="AI 配置档"
+                data-testid="ai-profile-select"
+                value={activeProfile?.id ?? ''}
+                onChange={(e) => {
+                  const id = e.target.value
+                  if (!id) {
+                    update('activeProfileId', undefined)
+                    return
+                  }
+                  const p = profiles.find((x) => x.id === id)
+                  if (p) applyProfile(p)
+                }}
+                className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring"
+              >
+                <option value="">
+                  {activeProfile ? '— 另存为新配置 —' : '— 不选择配置 —'}
+                </option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span className="flex-1 text-[11px] text-muted-foreground">
+                可将常用网关保存为配置，一键切换（如日常/终稿模型）。
+              </span>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 shrink-0 gap-1 px-2 text-[11px]"
+              data-testid="ai-profile-save"
+              onClick={saveProfile}
+            >
+              <BookMarked className="size-3.5" /> {activeProfile ? '更新' : '保存为配置'}
+            </Button>
+            {activeProfile && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 shrink-0 px-2 text-muted-foreground hover:text-destructive"
+                aria-label="删除当前配置"
+                data-testid="ai-profile-delete"
+                onClick={deleteProfile}
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )}
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="ai-base-url" className="text-xs">
               Base URL（OpenAI 兼容格式）
@@ -179,6 +276,37 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             )}
             测试连接
           </Button>
+        </section>
+
+        <Separator />
+
+        {/* 手动排版档位 */}
+        <section className="space-y-2">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+            <BookMarked className="size-4 text-primary" /> 排版
+          </h3>
+          <div className="grid grid-cols-3 gap-1.5">
+            {LAYOUT_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                data-testid={`layout-${opt.id}`}
+                title={opt.desc}
+                className={cn(
+                  'rounded-md border px-2 py-1.5 text-xs font-medium transition-colors',
+                  settings.layout === opt.id
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border text-muted-foreground hover:bg-accent'
+                )}
+                onClick={() => update('layout', opt.id)}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            作用范围：编辑画布、A4 预览与所有导出；「智能一页」在其基础上自动收紧以适配一页。
+          </p>
         </section>
 
         <Separator />

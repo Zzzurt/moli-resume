@@ -2136,3 +2136,76 @@
 .bubble-toolbar.stack .bt-row {
   flex-wrap: wrap;
 }
+
+/* ============================================================
+   打印 / 文字版 PDF（printPaperToPdf 克隆纸张到 [data-print-sheet]）
+   规则：隐藏应用本体，只输出简历纸张；矢量文字可复制可搜索（ATS 友好）
+   ============================================================ */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  /* 隐藏应用本体（含弹窗 portal 等 body 直接子级），仅保留打印容器 */
+  body > :not([data-print-sheet]) {
+    display: none !important;
+  }
+  [data-print-sheet] {
+    display: block;
+    width: 210mm;
+    /* 保证深色侧栏 / 底色块等背景色正常打印 */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [data-print-sheet] * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* 纸张微 UI（阴影/圆角）去纸质感；其余由克隆时内联样式保证 */
+  [data-print-sheet] .resume-paper {
+    box-shadow: none;
+    border-radius: 0;
+  }
+}
+
+/* ============================================================
+   手动排版档位（标准 / 紧凑 / 宽松）
+   通过覆盖模板自身的排版基础变量生效（挂在模板元素上，位于本文件
+   末尾 → 同属性后声明覆盖模板默认值）。智能一页的密度乘数（--rs-*k）
+   在此基础上继续按比例收紧，二者互不冲突。
+   注：档位值面向主流模板取整，个别模板容器比例略有差异属正常。
+   ============================================================ */
+.layout-loose {
+  --rs-lh: 1.8;
+  --rs-pad-y: 62px;
+  --rs-h2t: 26px;
+  --rs-h2b: 12px;
+  --rs-h3t: 17px;
+  --rs-pg: 8px;
+  --rs-lst: 8px;
+  --rs-lit: 4px;
+  --rs-hrg: 24px;
+  font-size: 14.2px;
+}
+.layout-compact {
+  --rs-lh: 1.5;
+  --rs-pad-y: 42px;
+  --rs-h2t: 18px;
+  --rs-h2b: 8px;
+  --rs-h3t: 12px;
+  --rs-pg: 4px;
+  --rs-lst: 4px;
+  --rs-lit: 1.5px;
+  --rs-hrg: 14px;
+  font-size: 12.8px;
+}
+
+/* 智能一页收敛后的缩放平滑过渡（扫描期一次性提交，过渡只柔化最终变化）；
+   导出/打印截图时禁用，保证抓帧与磁盘输出静止一致 */
+.resume-paper .rs-scale-layer {
+  transition: transform 180ms ease;
+}
+.exporting .rs-scale-layer,
+[data-print-sheet] .rs-scale-layer {
+  transition: none !important;
+}

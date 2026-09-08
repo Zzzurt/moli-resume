@@ -59,14 +59,34 @@ async function main() {
   const browser = await chromium.launch()
   const page = await browser.newPage()
   const pageErrors = []
+  /** 多页简历 id（2m-2/2m-3/2m-4 共用） */
+  let scrollId = -1
+  /** 多页文档内容（多用例共用） */
+  const longMd = Array.from(
+    { length: 40 },
+    () => '## 段落标题\n\n- 条目内容用于撑高页面。\n- 第二条目内容。'
+  ).join('\n\n')
   page.on('pageerror', (e) => pageErrors.push('pageerror: ' + e.message))
   page.on('console', (m) => {
     if (m.text().includes('[diag-jd]')) console.log('[page-console]', m.text())
   })
 
   try {
-    /* 1. 列表页加载 */
+    /* 1. 列表页加载。
+       空状态时顶栏操作组隐藏（与中央引导去重）：先点中央「创建示例简历」
+       生成一份简历，返回列表后顶栏按钮恢复，供后续用例使用。
+       注：isVisible() 的 timeout 会被忽略（立即返回），必须用 waitFor 等待空态渲染 */
     await page.goto(`${BASE}/#/`)
+    const sampleBtn = page.getByRole('button', { name: '创建示例简历' })
+    const hasEmpty = await sampleBtn
+      .waitFor({ state: 'visible', timeout: 3000 })
+      .then(() => true)
+      .catch(() => false)
+    if (hasEmpty) {
+      await sampleBtn.click()
+      await page.getByText('块编辑器').waitFor({ timeout: 10000 })
+      await page.goto(`${BASE}/#/`)
+    }
     await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
     ok('list page loads')
   } catch (e) {
@@ -212,6 +232,41 @@ async function main() {
   }
 
   try {
+    /* 2h-2. AI 停止生成：润色模式自动执行 → 加载中点「停止」→ 展示「已停止生成」（非报错） */
+    const stopCtx = await browser.newContext()
+    const p3 = await stopCtx.newPage()
+    /* 模拟无响应网关：20s 后才返回首字节（远超测试时长，请求保持 pending 直到用户中止） */
+    await p3.route('**/chat/completions', (route) => {
+      return new Promise((resolve) => setTimeout(resolve, 20_000)).then(() =>
+        route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'data: [DONE]\n\n' })
+      )
+    })
+    await p3.goto(`${BASE}/#/`)
+    await p3.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+    const stopId = await idbAddResume(p3, '停止测试', '# 停止测试\n\n一段内容。', 'minimal')
+    await idbSetSetting(p3, 'aiApiKey', 'test-key')
+    await idbSetSetting(p3, 'aiBaseUrl', 'https://mock.local/v1')
+    await p3.goto(`${BASE}/#/resume/${stopId}`)
+    await p3.reload()
+    await p3.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await p3.locator('.ProseMirror').click()
+    await p3.keyboard.press('Control+a')
+    await p3.locator('.bt-ai').waitFor({ timeout: 5000 })
+    await p3.locator('.bt-ai').click()
+    await p3.getByRole('dialog').waitFor({ timeout: 5000 })
+    /* 润色模式打开即自动执行：加载中出现「停止」按钮 */
+    const stopBtn = p3.getByRole('button', { name: '停止' })
+    await stopBtn.waitFor({ timeout: 5000 })
+    await stopBtn.click()
+    /* 无任何生成内容：展示「已停止生成」中性状态（而非红色报错） */
+    await p3.getByText('已停止生成').waitFor({ timeout: 5000 })
+    ok('ai stop button (polish)')
+    await stopCtx.close()
+  } catch (e) {
+    fail('ai stop button (polish)', e)
+  }
+
+  try {
     /* 2i. 单页简历导出 PDF 恰好一页（无空白尾页：切片舍入残差回归） */
     const shortId = await idbAddResume(page, '页数测试', '# 单页测试\n\n一段很短的内容。', 'minimal')
     await page.goto(`${BASE}/#/resume/${shortId}`)
@@ -313,9 +368,10 @@ async function main() {
         body: 'data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n',
       })
     })
-    /* 建含锚点句子的简历（建议的 original 必须能在文档中逐字定位）；IDB 需同源页面 */
+    /* 建含锚点句子的简历（建议的 original 必须能在文档中逐字定位）；IDB 需同源页面。
+       新上下文为空状态（顶栏按钮隐藏）：等待应用标题即可，随后的 reload 会带上简历 */
     await p2.goto(`${BASE}/#/`)
-    await p2.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 15000 })
+    await p2.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
     const jdId = await idbAddResume(
       p2,
       'jd 测试',
@@ -426,6 +482,175 @@ async function main() {
     else throw new Error('anchor not found after apply')
   } catch (e) {
     fail('editor interactions', e)
+  }
+
+  try {
+    /* 2m-1. 列表卡片实时缩略图：卡片内渲染 resume-thumb（真实内容首屏可见） */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    await page.locator('[data-testid="resume-thumb"]').first().waitFor({ timeout: 10000 })
+    ok('list card thumbnail renders')
+  } catch (e) {
+    fail('list card thumbnail renders', e)
+  }
+
+  try {
+    /* 2m-2. 编辑→预览滚动联动：光标移到多页文档末尾块 → 预览滚动位置变化 */
+    scrollId = await idbAddResume(page, '联动测试', longMd, 'minimal')
+    await page.goto(`${BASE}/#/resume/${scrollId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.waitForTimeout(1200) /* 等智能一页测量收敛（多页保留） */
+    const scrolled = await page
+      .locator('[data-testid="preview-viewport"]')
+      .evaluate((el) => el.scrollHeight > el.clientHeight)
+    if (!scrolled) throw new Error('preview not scrollable (content too short?)')
+    const before = await page.locator('[data-testid="preview-viewport"]').evaluate((el) => el.scrollTop)
+    await page.locator('.ProseMirror').click()
+    await page.keyboard.press('Control+End') /* 光标移到文档末尾块 */
+    await page.keyboard.press('End')
+    await page.waitForTimeout(600)
+    const after = await page.locator('[data-testid="preview-viewport"]').evaluate((el) => el.scrollTop)
+    if (after <= before) throw new Error(`preview did not follow caret (before=${before} after=${after})`)
+    ok('edit→preview scroll follow')
+  } catch (e) {
+    fail('edit→preview scroll follow', e)
+  }
+
+  try {
+    /* 2m-3. 窄屏适配：<1024px 显示「编辑/预览」标签页，切换只显示对应面板 */
+    const mobCtx = await browser.newContext({ viewport: { width: 780, height: 900 } })
+    const pm = await mobCtx.newPage()
+    const mobErrors = []
+    pm.on('pageerror', (e) => mobErrors.push(e.message))
+    /* 新 context 无 IndexedDB 数据：先建实习简历再进编辑器 */
+    await pm.goto(`${BASE}/#/`)
+    await pm.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+    const mobId = await idbAddResume(pm, '移动测试', longMd, 'minimal')
+    await pm.goto(`${BASE}/#/resume/${mobId}`)
+    await pm.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await pm.getByTestId('mobile-view-edit').waitFor({ timeout: 5000 })
+    await pm.getByTestId('mobile-view-preview').click()
+    /* 预览面板可见、编辑器隐藏 */
+    await pm.locator('[data-testid="preview-viewport"]').waitFor({ timeout: 5000 })
+    const editorHidden = !(await pm.locator('.editor-canvas').isVisible().catch(() => false))
+    if (!editorHidden) throw new Error('editor still visible in preview tab')
+    /* 切回编辑：编辑器可见、预览隐藏 */
+    await pm.getByTestId('mobile-view-edit').click()
+    await pm.locator('.editor-canvas').waitFor({ timeout: 5000 })
+    if (mobErrors.length) throw new Error('page errors: ' + mobErrors.join(' | '))
+    ok('narrow viewport edit/preview tabs')
+    await mobCtx.close()
+  } catch (e) {
+    fail('narrow viewport edit/preview tabs', e)
+  }
+
+  try {
+    /* 2m-4. 文字版 PDF：菜单项触发打印链路（headless 下以空函数代替 window.print 防弹框）。
+       覆盖：克隆纸张 → 调用打印 → 清理 [data-print-sheet] 容器 */
+    const printCtx = await browser.newContext()
+    const p4 = await printCtx.newPage()
+    await p4.addInitScript(() => {
+      window.print = () => {}
+    })
+    const printErrors = []
+    p4.on('pageerror', (e) => printErrors.push(e.message))
+    /* 新 context 无 IndexedDB 数据：先建简历再进编辑器 */
+    await p4.goto(`${BASE}/#/`)
+    await p4.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+    const printId = await idbAddResume(p4, '打印测试', longMd, 'minimal')
+    await p4.goto(`${BASE}/#/resume/${printId}`)
+    await p4.reload()
+    await p4.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await p4.getByRole('button', { name: '文件' }).click()
+    await p4.getByRole('menuitem', { name: /导出文字版 PDF/ }).click()
+    await p4.waitForTimeout(400)
+    if ((await p4.locator('[data-print-sheet]').count()) !== 0)
+      throw new Error('print sheet host not cleaned up')
+    if (printErrors.length) throw new Error('page errors: ' + printErrors.join(' | '))
+    ok('text-vector pdf menu + print pipeline')
+    await printCtx.close()
+  } catch (e) {
+    fail('text-vector pdf menu + print pipeline', e)
+  }
+
+  try {
+    /* 2m-5. 排版档位：设置 → 切「紧凑」→ 编辑器画布与预览纸张挂 layout-compact → 恢复标准 */
+    await page.goto(`${BASE}/#/resume/${scrollId}`)
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: '设置' }).click()
+    await page.getByTestId('layout-compact').waitFor({ timeout: 5000 })
+    await page.getByTestId('layout-compact').click()
+    await page.waitForTimeout(600)
+    if ((await page.locator('.editor-canvas.layout-compact').count()) !== 1)
+      throw new Error('editor canvas missing layout-compact class')
+    if ((await page.locator('[data-testid="resume-paper"] .layout-compact').count()) < 1)
+      throw new Error('preview paper missing layout-compact class')
+    await page.getByTestId('layout-standard').click()
+    await page.waitForTimeout(300)
+    await page.keyboard.press('Escape')
+    ok('layout density settings applied')
+  } catch (e) {
+    fail('layout density settings applied', e)
+  }
+
+  try {
+    /* 2m-6. AI 多配置档：保存两套配置 → 下拉出现 → 切换 → 字段回填闭环 */
+    await page.getByRole('button', { name: '设置' }).click()
+    await page.getByTestId('ai-profile-save').waitFor({ timeout: 5000 })
+    if ((await page.getByTestId('ai-profile-select').count()) !== 0)
+      throw new Error('select should not exist before saving first profile')
+    const keyInput = page.locator('#ai-api-key')
+    await keyInput.fill('pk-1')
+    await page.getByTestId('ai-profile-save').click()
+    /* 已选中「配置 1」：选回空选项 → 再保存为「配置 2」 */
+    const select = page.getByTestId('ai-profile-select')
+    await select.waitFor({ timeout: 5000 })
+    await select.selectOption('')
+    await keyInput.fill('pk-2')
+    await page.getByTestId('ai-profile-save').click()
+    const optCount = await select.locator('option').count()
+    if (optCount < 2) throw new Error(`expected >=2 profile options, got ${optCount}`)
+    /* 切到「配置 1」→ Key 输入回填 */
+    await select.selectOption({ label: '配置 1' })
+    await page.waitForTimeout(300)
+    const val = await keyInput.inputValue()
+    if (val !== 'pk-1') throw new Error(`expected key pk-1 after switch, got ${val}`)
+    ok('ai profile save/switch/refill')
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+  } catch (e) {
+    fail('ai profile save/switch/refill', e)
+  }
+
+  try {
+    /* 2m-7. Word（.docx）导出：文件菜单 → 下载 blod */
+    /* 确保设置弹窗已关闭（前用例 Escape），避免遮挡顶栏「文件」按钮 */
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '文件' }).click()
+    const [dl] = await Promise.all([
+      page.waitForEvent('download', { timeout: 60000 }),
+      page.getByRole('menuitem', { name: /导出 Word/ }).click(),
+    ])
+    const p = await dl.path()
+    if (!p) throw new Error('no docx download path')
+    ok('docx export downloads')
+  } catch (e) {
+    fail('docx export downloads', e)
+  }
+
+  try {
+    /* 2m-8. PWA 资源：manifest 与 SW 在服务端可达（.webmanifest / sw.js）；PWA 注册在 dev 不启用 */
+    for (const asset of ['manifest.webmanifest', 'sw.js', 'icon-192.png', 'icon-512.png']) {
+      const res = await page.request.get(`${BASE}/${asset}`)
+      if (!res.ok()) throw new Error(`${asset} => ${res.status()}`)
+    }
+    const manifest = await (await page.request.get(`${BASE}/manifest.webmanifest`)).json()
+    if (!manifest.name || !manifest.display) throw new Error('manifest fields missing')
+    ok('pwa static assets served')
+  } catch (e) {
+    fail('pwa static assets served', e)
   }
 
   try {

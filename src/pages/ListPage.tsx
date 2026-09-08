@@ -44,8 +44,88 @@ import { pickTextFile, titleFromFilename } from '@/lib/fileIO'
 import { DEFAULT_RESUME_CONTENT, DEFAULT_RESUME_TITLE } from '@/lib/defaultResume'
 import { docFirstLine } from '@/lib/docUtils'
 import { TEMPLATES, type Resume } from '@/types'
+import { ResumeThumb } from '@/components/ResumeThumb'
 import { cn, timeAgo } from '@/lib/utils'
 import { toast } from 'sonner'
+
+/** 简历卡片：顶部为文档实时缩略（与模板面板同一渲染管线），下方标题与元信息。
+    独立子组件以持有各自 hooks（parseDoc 缓存、缩略图 ResizeObserver） */
+function ResumeCard({
+  resume,
+  onOpen,
+  onRename,
+  onDuplicate,
+  onDelete,
+}: {
+  resume: Resume
+  onOpen: () => void
+  onRename: () => void
+  onDuplicate: () => void
+  onDelete: () => void
+}) {
+  const tpl = TEMPLATES.find((t) => t.id === resume.template)
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => e.key === 'Enter' && onOpen()}
+      className="group relative flex cursor-pointer flex-col overflow-hidden rounded-lg border bg-card text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
+    >
+      {/* 文档实时缩略图（按内容与模板渲染；hover 时不放大缩放，避免整卡重排） */}
+      <div className="relative border-b bg-muted/30">
+        <ResumeThumb
+          template={resume.template}
+          content={resume.content}
+          emptyHint="空白简历"
+        />
+        <span className="absolute left-2 top-2 rounded bg-black/50 px-1.5 py-0.5 text-[10px] font-medium text-white opacity-0 backdrop-blur transition-opacity group-hover:opacity-100">
+          {tpl?.name ?? '简约'}
+        </span>
+      </div>
+
+      <div className="flex flex-1 flex-col p-3">
+        <div className="flex items-start justify-between gap-2">
+          <h3 className="line-clamp-1 text-sm font-semibold">{resume.title}</h3>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                aria-label="文档操作"
+                className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MoreVertical className="size-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem onClick={onRename}>
+                <Pencil className="size-4" /> 重命名
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onDuplicate}>
+                <Copy className="size-4" /> 创建副本
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
+                <Trash2 className="size-4" /> 删除
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        <div className="mt-2 flex items-center gap-3 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className={cn('size-2 rounded-[3px]', tpl?.dotClass ?? 'bg-gray-300')} />
+            {tpl?.name ?? '简约'}
+          </span>
+          <span>编辑于 {timeAgo(resume.updatedAt)}</span>
+          <span className="ml-auto line-clamp-1 flex-1 text-right">
+            {docFirstLine(resume.content) ?? '（空白文档）'}
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function ListPage() {
   const navigate = useNavigate()
@@ -137,14 +217,18 @@ export function ListPage() {
                   : `${resumes.length} 份文档 · 数据仅保存在本浏览器`}
               </p>
             </div>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => void handleImport()}>
-                <FileUp className="size-3.5" /> 导入 .md
-              </Button>
-              <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setCreateOpen(true)}>
-                <Plus className="size-3.5" /> 新建简历
-              </Button>
-            </div>
+            {/* 空状态时隐藏顶栏操作组：与中央引导按钮功能重复，把焦点留给引导区。
+                加载中（undefined）也隐藏，避免按钮闪现后随空态消失 */}
+            {resumes !== undefined && !empty && (
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" onClick={() => void handleImport()}>
+                  <FileUp className="size-3.5" /> 导入 .md
+                </Button>
+                <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setCreateOpen(true)}>
+                  <Plus className="size-3.5" /> 新建简历
+                </Button>
+              </div>
+            )}
           </div>
 
           {/* 空状态 */}
@@ -172,66 +256,19 @@ export function ListPage() {
 
           {/* 卡片网格 */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {resumes?.map((r) => {
-              const tpl = TEMPLATES.find((t) => t.id === r.template)
-              return (
-                <div
-                  key={r.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => navigate(`/resume/${r.id}`)}
-                  onKeyDown={(e) => e.key === 'Enter' && navigate(`/resume/${r.id}`)}
-                  className="group relative flex cursor-pointer flex-col rounded-lg border bg-card p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-primary/50 hover:shadow-md"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <h3 className="line-clamp-1 text-sm font-semibold">{r.title}</h3>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          aria-label="文档操作"
-                          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <MoreVertical className="size-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenuItem
-                          onClick={() => {
-                            setRenaming(r)
-                            setRenameValue(r.title)
-                          }}
-                        >
-                          <Pencil className="size-4" /> 重命名
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => void handleDuplicate(r.id!)}>
-                          <Copy className="size-4" /> 创建副本
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive focus:text-destructive"
-                          onClick={() => setDeleting(r)}
-                        >
-                          <Trash2 className="size-4" /> 删除
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-
-                  <p className="mt-2 line-clamp-2 flex-1 text-xs leading-relaxed text-muted-foreground">
-                    {docFirstLine(r.content) ?? '（空白文档）'}
-                  </p>
-
-                  <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-                    <span className="flex items-center gap-1.5">
-                      <span className={cn('size-2 rounded-[3px]', tpl?.dotClass ?? 'bg-gray-300')} />
-                      {tpl?.name ?? '简约'}
-                    </span>
-                    <span>编辑于 {timeAgo(r.updatedAt)}</span>
-                  </div>
-                </div>
-              )
-            })}
+            {resumes?.map((r) => (
+              <ResumeCard
+                key={r.id}
+                resume={r}
+                onOpen={() => navigate(`/resume/${r.id}`)}
+                onRename={() => {
+                  setRenaming(r)
+                  setRenameValue(r.title)
+                }}
+                onDuplicate={() => void handleDuplicate(r.id!)}
+                onDelete={() => setDeleting(r)}
+              />
+            ))}
           </div>
         </div>
       </main>

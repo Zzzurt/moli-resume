@@ -6,7 +6,7 @@ import type { ChatMessage, GrammarSuggestion } from '@/types'
  */
 
 export interface AIError extends Error {
-  code: 'NO_KEY' | 'BAD_URL' | 'HTTP' | 'NETWORK' | 'PARSE'
+  code: 'NO_KEY' | 'BAD_URL' | 'HTTP' | 'NETWORK' | 'PARSE' | 'ABORTED'
   status?: number
 }
 
@@ -47,6 +47,10 @@ export interface ChatOptions {
   idleMs?: number
   /** 流式回调：每收到增量内容触发（参数为到目前为止的完整文本） */
   onDelta?: (partial: string) => void
+  /** 外部中止信号（如用户点击「停止」）：中止时抛出 ABORTED 错误 */
+  signal?: AbortSignal
+  /** 用户中止时若已生成部分内容：true = 返回已生成部分（文本改写类能力），false/缺省 = 抛 ABORTED（结构化 JSON 类能力） */
+  keepPartialOnAbort?: boolean
 }
 
 /**
@@ -76,6 +80,23 @@ export async function chatCompletion(
   const firstByteMs = options.firstByteMs ?? 45_000
   const idleMs = options.idleMs ?? 120_000
   const controller = new AbortController()
+  /** 用户主动中止（区别于超时中断）：UI 据此展示「已停止」而非报错 */
+  let userAborted = false
+  if (options.signal) {
+    if (options.signal.aborted) {
+      userAborted = true
+      controller.abort()
+    } else {
+      options.signal.addEventListener(
+        'abort',
+        () => {
+          userAborted = true
+          controller.abort()
+        },
+        { once: true }
+      )
+    }
+  }
   let timer: number | undefined
   const arm = (ms: number) => {
     if (timer) window.clearTimeout(timer)
@@ -113,6 +134,7 @@ export async function chatCompletion(
   } catch (e) {
     disarm()
     if (e instanceof DOMException && e.name === 'AbortError') {
+      if (userAborted) throw aiError('ABORTED', '已停止生成')
       throw aiError('NETWORK', '连接模型超时：长时间未收到响应，请稍后重试或更换更快的模型')
     }
     throw aiError('NETWORK', '网络请求失败，请检查 Base URL 与网络连接')
@@ -151,6 +173,7 @@ export async function chatCompletion(
       return content
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
+        if (userAborted) throw aiError('ABORTED', '已停止生成')
         throw aiError('NETWORK', '读取模型响应超时，请稍后重试')
       }
       throw e
@@ -213,6 +236,14 @@ export async function chatCompletion(
   } catch (e) {
     disarm()
     if (e instanceof DOMException && e.name === 'AbortError') {
+      if (userAborted) {
+        // 文本改写类能力：中止时返回已生成部分，用户可确认后应用
+        if (content && options.keepPartialOnAbort) {
+          options.onDelta?.(content)
+          return content
+        }
+        throw aiError('ABORTED', '已停止生成')
+      }
       if (content) {
         // 中断时保留已生成的部分，避免整段作废
         options.onDelta?.(content)
@@ -270,7 +301,7 @@ export async function aiAssist(
   mode: AiMode,
   selected: string,
   instruction?: string,
-  options: { onDelta?: (partial: string) => void } = {}
+  options: { onDelta?: (partial: string) => void; signal?: AbortSignal } = {}
 ): Promise<string> {
   let system: string
   switch (mode) {
@@ -313,7 +344,12 @@ export async function aiAssist(
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    { temperature: mode === 'condense' ? 0.3 : 0.4, onDelta: options.onDelta }
+    {
+      temperature: mode === 'condense' ? 0.3 : 0.4,
+      onDelta: options.onDelta,
+      signal: options.signal,
+      keepPartialOnAbort: true, // 文本改写：中止时保留已生成部分，确认后仍可应用
+    }
   )
   return stripFence(raw.trim())
 }
@@ -340,7 +376,7 @@ export async function jdAnalyze(
   config: AIConfig,
   fullMarkdown: string,
   jd: string,
-  options: { onDelta?: (partial: string) => void } = {}
+  options: { onDelta?: (partial: string) => void; signal?: AbortSignal } = {}
 ): Promise<JdReport> {
   const system =
     '你是一位资深招聘顾问。请对照职位描述分析用户的简历（Markdown 全文），输出 JSON 分析报告，结构如下：\n' +
@@ -358,7 +394,13 @@ export async function jdAnalyze(
       { role: 'system', content: system },
       { role: 'user', content: user },
     ],
-    { temperature: 0.3, firstByteMs: 60_000, idleMs: 150_000, onDelta: options.onDelta }
+    {
+      temperature: 0.3,
+      firstByteMs: 60_000,
+      idleMs: 150_000,
+      onDelta: options.onDelta,
+      signal: options.signal,
+    }
   )
   return parseJdReport(stripFence(raw.trim()))
 }
@@ -405,7 +447,7 @@ function parseJdReport(raw: string): JdReport {
 export async function checkGrammar(
   config: AIConfig,
   fullMarkdown: string,
-  options: { onDelta?: (partial: string) => void } = {}
+  options: { onDelta?: (partial: string) => void; signal?: AbortSignal } = {}
 ): Promise<GrammarSuggestion[]> {
   const system =
     '你是一位简历审校专家。请检查用户简历 Markdown 全文中的错别字、语病、标点误用、' +
@@ -419,7 +461,13 @@ export async function checkGrammar(
       { role: 'system', content: system },
       { role: 'user', content: fullMarkdown },
     ],
-    { temperature: 0.1, firstByteMs: 60_000, idleMs: 150_000, onDelta: options.onDelta }
+    {
+      temperature: 0.1,
+      firstByteMs: 60_000,
+      idleMs: 150_000,
+      onDelta: options.onDelta,
+      signal: options.signal,
+    }
   )
   return parseSuggestions(stripFence(raw.trim()), fullMarkdown)
 }
@@ -467,4 +515,9 @@ export function aiErrorMessage(e: unknown): string {
     if (err.code === 'NO_KEY') return err.message
   }
   return e instanceof Error ? e.message : 'AI 调用失败，请重试'
+}
+
+/** 是否为用户主动中止（UI 据此展示「已停止」而非报错） */
+export function isAbortedError(e: unknown): boolean {
+  return !!e && typeof e === 'object' && (e as AIError).code === 'ABORTED'
 }

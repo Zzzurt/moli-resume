@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 品牌深绿圆角方底（maskable 安全区居中，四周留白） -->
+  <rect x="0" y="0" width="512" height="512" fill="#0f766e"/>
+  <rect x="72" y="72" width="368" height="368" rx="80" fill="#0f766e"/>
+  <g transform="translate(256 256) scale(12) translate(-16 -16)">
+    <path d="M10 8v14a2 2 0 0 0 2 2h10" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M14.5 8 10 12.5 5.5 8" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" transform="translate(16 4) rotate(45) translate(-16 -4) scale(0.55)"/>
+  </g>
+</svg>

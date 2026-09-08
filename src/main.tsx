@@ -14,3 +14,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <App />
   </React.StrictMode>
 )
+
+/* PWA：仅生产注册 Service Worker（dev 下注册会干扰 HMR 缓存）；
+   相对路径注册，适配子路径部署 */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => {})
+  })
+}

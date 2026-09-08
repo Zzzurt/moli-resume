@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { SpellCheck2, RefreshCw, Check, Wand2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { SpellCheck2, RefreshCw, Check, Wand2, Square } from 'lucide-react'
 import { AiProgress } from '@/components/ai/AiProgress'
 import {
   Dialog,
@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useSettings } from '@/hooks/useSettings'
-import { aiErrorMessage, checkGrammar } from '@/lib/aiService'
+import { aiErrorMessage, checkGrammar, isAbortedError } from '@/lib/aiService'
 import type { GrammarSuggestion } from '@/types'
 import { toast } from 'sonner'
 
@@ -22,7 +22,7 @@ interface GrammarDialogProps {
   onApply: (nextMarkdown: string) => void
 }
 
-type Phase = 'checking' | 'done' | 'error' | 'idle'
+type Phase = 'checking' | 'done' | 'error' | 'idle' | 'stopped'
 
 /** 整份简历语法检查：逐条审阅、逐条应用 */
 export function GrammarDialog({ open, onOpenChange, markdown, onApply }: GrammarDialogProps) {
@@ -35,8 +35,12 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
   const [received, setReceived] = useState(0)
   /** 应用过程中的最新全文：每应用一条立即更新，避免后续建议基于过期快照互相覆盖 */
   const [currentMd, setCurrentMd] = useState(markdown)
+  /** 当前检查的中止控制器（「停止」按钮触发 abort） */
+  const abortRef = useRef<AbortController | null>(null)
 
   const run = useCallback(async () => {
+    const ac = new AbortController()
+    abortRef.current = ac
     setPhase('checking')
     setError(null)
     setAppliedIds(new Set())
@@ -46,13 +50,18 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
       const list = await checkGrammar(
         { baseUrl: settings.aiBaseUrl, apiKey: settings.aiApiKey, model: settings.aiModel },
         markdown,
-        { onDelta: (partial) => setReceived(partial.length) }
+        { onDelta: (partial) => setReceived(partial.length), signal: ac.signal }
       )
       setSuggestions(list)
       setPhase('done')
     } catch (e) {
-      setError(aiErrorMessage(e))
-      setPhase('error')
+      if (isAbortedError(e)) setPhase('stopped')
+      else {
+        setError(aiErrorMessage(e))
+        setPhase('error')
+      }
+    } finally {
+      abortRef.current = null
     }
   }, [markdown, settings])
 
@@ -90,10 +99,28 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
 
         <div className="min-h-0">
           {phase === 'checking' && (
-            <AiProgress
-              label="正在通读整份简历，检查错别字、语病与表达问题…"
-              chars={received > 0 ? received : undefined}
-            />
+            <div className="flex flex-col items-center gap-3">
+              <AiProgress
+                label="正在通读整份简历，检查错别字、语病与表达问题…"
+                chars={received > 0 ? received : undefined}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => abortRef.current?.abort()}
+              >
+                <Square className="size-3.5" /> 停止
+              </Button>
+            </div>
+          )}
+
+          {phase === 'stopped' && (
+            <div className="flex h-32 flex-col items-center justify-center gap-3">
+              <p className="text-xs text-muted-foreground">已停止检查</p>
+              <Button size="sm" variant="outline" onClick={() => void run()}>
+                <RefreshCw className="size-3.5" /> 重新检查
+              </Button>
+            </div>
           )}
 
           {phase === 'error' && (

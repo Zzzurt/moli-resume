@@ -101,6 +101,10 @@ interface TiptapEditorProps {
   onJdMatch?: () => void
   /** 主题色覆盖（作用到画布模板 --rs-accent）；空 = 模板默认色 */
   accentColor?: string
+  /** 光标所在顶层块索引变化时上抛（联动预览滚动；-1 = 无有效块） */
+  onActiveBlockChange?: (index: number) => void
+  /** 手动排版档位类（layout-loose / layout-compact / 空 = 标准） */
+  layoutClass?: string
 }
 
 /* ---------- 斜杠菜单项 ---------- */
@@ -148,19 +152,24 @@ const TPL_CLASS: Record<TemplateId, string> = {
  * - 每个顶层块绑定 data-index，供预览点击反向定位
  */
 export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function TiptapEditor(
-  { initialContent, template, saveState, checking = false, onInit, onDocChange, onAiRequest, onGrammarCheck, onJdMatch, pageMetrics, accentColor },
+  { initialContent, template, saveState, checking = false, onInit, onDocChange, onAiRequest, onGrammarCheck, onJdMatch, pageMetrics, accentColor, onActiveBlockChange, layoutClass = '' },
   ref
 ) {
   // 稳定回调 ref（避免编辑器实例因闭包变化重建；赋值放 effect，不在渲染期改 ref）
   const onInitRef = useRef(onInit)
   const onDocChangeRef = useRef(onDocChange)
   const onAiRef = useRef(onAiRequest)
+  const onActiveBlockRef = useRef(onActiveBlockChange)
+  /** 上次上报的光标块索引：仅跨块变化时上抛，避免块内移动高频触发父级重渲染 */
+  const lastActiveRef = useRef(-1)
   const slashOpenRef = useRef<(pos: number) => void>(() => {})
 
   useEffect(() => {
     onInitRef.current = onInit
     onDocChangeRef.current = onDocChange
     onAiRef.current = onAiRequest
+    onActiveBlockRef.current = onActiveBlockChange
+    lastActiveRef.current = -1
   })
 
   // 初始内容：JSON 直用；旧 Markdown 经 scratch editor 转换
@@ -313,9 +322,21 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
 
     const onTrans = () => {
       setBlockCount(editor.state.doc.childCount)
+      const { from } = editor.state.selection
+
+      // 光标所在顶层块索引 → 父级联动预览滚动（仅跨块变化时上报）
+      let topIndex = -1
+      editor.state.doc.content.forEach((node, offset, index) => {
+        if (topIndex >= 0) return
+        if (from >= offset && from < offset + node.nodeSize) topIndex = index
+      })
+      if (topIndex >= 0 && topIndex !== lastActiveRef.current) {
+        lastActiveRef.current = topIndex
+        onActiveBlockRef.current?.(topIndex)
+      }
 
       // 选区状态（供工具条按钮 & 悬浮工具栏）
-      const { from, to, empty } = editor.state.selection
+      const { to, empty } = editor.state.selection
       const text = empty ? '' : editor.state.doc.textBetween(from, to).trim()
       setHasSelection(!!text)
       if (!text || !editor.isFocused) {
@@ -692,7 +713,8 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
           <div
             className={cn(
               'editor-canvas mx-auto my-6 w-full max-w-[720px] rounded-md border bg-card px-4 py-2 shadow-sm',
-              tplClass
+              tplClass,
+              layoutClass
             )}
             style={accentColor ? ({ ['--rs-accent']: accentColor } as CSSProperties) : undefined}
             onKeyDownCapture={handleKeyCapture}
