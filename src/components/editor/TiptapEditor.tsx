@@ -38,11 +38,13 @@ import {
   Redo2,
   FileCode2,
   ScanSearch,
+  Check,
   Table as TableIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createEditorExtensions, markdownToDoc, docToMarkdown } from '@/lib/editorSetup'
 import { stripMdSyntax } from '@/lib/docUtils'
+import { useMediaQuery, NARROW_QUERY } from '@/hooks/useMediaQuery'
 import { DragHandleLayer } from './DragHandleLayer'
 import { TableMenu } from './TableMenu'
 import { AI_MODES, type AiMode } from '@/lib/aiService'
@@ -96,7 +98,17 @@ interface TiptapEditorProps {
   onAiRequest: (mode: AiMode) => void
   onGrammarCheck: () => void
   /** 页面度量（来自 Preview 测量）：状态栏实时页数与智能一页状态 */
-  pageMetrics?: { pageCount: number; density: number; smartOnePage: boolean }
+  pageMetrics?: {
+    pageCount: number
+    density: number
+    /** 反向舒展档（内容不足一页时撑满用） */
+    expand: number
+    /** 内容占纸面比例（1 = 正好填满） */
+    fill: number
+    /** 智能一页是否实际做了调整（档位或缩放） */
+    fitted: boolean
+    smartOnePage: boolean
+  }
   /** 打开 JD 匹配分析（读全文，分析型不替换文档） */
   onJdMatch?: () => void
   /** 主题色覆盖（作用到画布模板 --rs-accent）；空 = 模板默认色 */
@@ -197,9 +209,11 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  /** <768px：工具条次要动作收进「更多」，避免文字换行把工具条撑高 */
+  const compact = useMediaQuery(NARROW_QUERY)
+
   /* ---------- 内部状态 ---------- */
   const [hasSelection, setHasSelection] = useState(false)
-  const [blockCount, setBlockCount] = useState(0)
   const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null)
   /** 悬浮工具栏是否展开更多工具行 */
   const [bubbleExpanded, setBubbleExpanded] = useState(false)
@@ -225,6 +239,47 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     window.clearTimeout(flashTimer.current)
     flashTimer.current = window.setTimeout(() => setFlashBoxes(null), 1700)
   }, [])
+  /** 上次锚定的工具栏位置：滚动时按选区重锚，位置没变就不 setState（避免滚动期高频重渲染） */
+  const bubbleAnchorRef = useRef<{ x: number; y: number } | null>(null)
+
+  /**
+   * 悬浮工具栏锚定（编辑事务与滚动共用同一判定）。
+   * 返回 false = 当前不该显示：无选区 / 未聚焦 / 选区整个滚出编辑区可视范围。
+   *
+   * 关键：滚动时不能无条件收起。ProseMirror 在打字与「全选」时会自动滚动 caret
+   * 到可视区，滚动事件会晚于选区事务到达——直接收起就会出现「工具栏刚浮出来就被抹掉」
+   * 的一帧闪烁（长文档上必现）。改为重新锚定，选区真的滚出视野才收起。
+   */
+  const anchorBubble = useCallback(
+    (text?: string): boolean => {
+      if (!editor) return false
+      const { from, to, empty } = editor.state.selection
+      if (empty || !editor.isFocused) return false
+      const content = text ?? editor.state.doc.textBetween(from, to).trim()
+      if (!content) return false
+      try {
+        const start = editor.view.coordsAtPos(from)
+        const end = editor.view.coordsAtPos(to)
+        const container = scrollRef.current
+        if (container) {
+          const crect = container.getBoundingClientRect()
+          if (end.bottom < crect.top || start.top > crect.bottom) return false
+        }
+        // 工具栏以选区中心为锚点，钳制在视口内避免左缘溢出
+        const x = Math.min(Math.max((start.left + end.left) / 2, 140), window.innerWidth - 140)
+        const next = { x, y: Math.min(start.top, end.top) }
+        const prev = bubbleAnchorRef.current
+        if (!prev || Math.abs(prev.x - next.x) > 1 || Math.abs(prev.y - next.y) > 1) {
+          bubbleAnchorRef.current = next
+          setBubblePos(next)
+        }
+        return true
+      } catch {
+        return false
+      }
+    },
+    [editor]
+  )
   /** 链接编辑弹窗：null 关闭；prev 记录原 href（空串表示新建链接） */
   const [linkDraft, setLinkDraft] = useState<{ prev: string } | null>(null)
   const [linkUrl, setLinkUrl] = useState('')
@@ -318,10 +373,8 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
   useEffect(() => {
     if (!editor) return
     onInitRef.current(JSON.stringify(editor.getJSON()))
-    setBlockCount(editor.state.doc.childCount)
 
     const onTrans = () => {
-      setBlockCount(editor.state.doc.childCount)
       const { from } = editor.state.selection
 
       // 光标所在顶层块索引 → 父级联动预览滚动（仅跨块变化时上报）
@@ -335,22 +388,13 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         onActiveBlockRef.current?.(topIndex)
       }
 
-      // 选区状态（供工具条按钮 & 悬浮工具栏）
+      // 选区状态（供工具条按钮 & 悬浮工具栏）；与工具栏锚定共用这一次文本判定
       const { to, empty } = editor.state.selection
       const text = empty ? '' : editor.state.doc.textBetween(from, to).trim()
       setHasSelection(!!text)
-      if (!text || !editor.isFocused) {
+      if (!anchorBubble(text)) {
+        bubbleAnchorRef.current = null
         setBubblePos(null)
-      } else {
-        try {
-          const start = editor.view.coordsAtPos(from)
-          const end = editor.view.coordsAtPos(to)
-          // 工具栏以选区中心为锚点，钳制在视口内避免左缘溢出
-          const x = Math.min(Math.max((start.left + end.left) / 2, 140), window.innerWidth - 140)
-          setBubblePos({ x, y: Math.min(start.top, end.top) })
-        } catch {
-          setBubblePos(null)
-        }
       }
 
       // 斜杠菜单：跟随查询 / 关闭判定
@@ -371,7 +415,10 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     const onBlur = () => {
       // 点击悬浮菜单（preventDefault）不会失焦；真正失焦时隐藏
       window.setTimeout(() => {
-        if (!editor.isFocused) setBubblePos(null)
+        if (!editor.isFocused) {
+          bubbleAnchorRef.current = null
+          setBubblePos(null)
+        }
       }, 120)
     }
 
@@ -383,7 +430,7 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
       editor.off('selectionUpdate', onTrans)
       editor.off('blur', onBlur)
     }
-  }, [editor])
+  }, [editor, anchorBubble])
 
   /* 斜杠菜单外点击关闭 */
   useEffect(() => {
@@ -397,13 +444,16 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     return () => document.removeEventListener('mousedown', onDown)
   }, [slash.open])
 
-  /* 编辑区滚动：悬浮工具栏直接关闭；斜杠菜单跟随锚点重新定位（滚出可视区才关闭），
-     避免 PM 打字时的 caret 自动滚动把刚唤起的菜单瞬间关掉 */
+  /* 编辑区滚动：悬浮工具栏按当前选区重新锚定（选区滚出可视区才收起）；斜杠菜单跟随锚点
+     重新定位（滚出可视区才关闭），避免 PM 打字时的 caret 自动滚动把刚唤起的菜单瞬间关掉 */
   useEffect(() => {
     const container = scrollRef.current
     if (!container || !editor) return
     const onScroll = () => {
-      setBubblePos(null)
+      if (!anchorBubble()) {
+        bubbleAnchorRef.current = null
+        setBubblePos(null)
+      }
       setSlash((prev) => {
         if (!prev.open) return prev
         try {
@@ -420,7 +470,7 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
     }
     container.addEventListener('scroll', onScroll, { passive: true })
     return () => container.removeEventListener('scroll', onScroll)
-  }, [editor])
+  }, [editor, anchorBubble])
 
   /* 工具栏收起时还原展开状态 */
   useEffect(() => {
@@ -601,95 +651,182 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-background">
-      {/* 工具条 */}
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-3">
-        <div className="flex items-center gap-1.5">
-          <span className="mr-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            块编辑器
-          </span>
-          {editor && (
-            <>
-              <button
-                type="button"
-                title="撤销（Ctrl+Z）"
-                aria-label="撤销"
-                disabled={!editor.can().undo()}
-                onClick={() => editor.chain().focus().undo().run()}
-                className="inline-flex size-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
-              >
-                <Undo2 className="size-3.5" />
-              </button>
-              <button
-                type="button"
-                title="重做（Ctrl+Y）"
-                aria-label="重做"
-                disabled={!editor.can().redo()}
-                onClick={() => editor.chain().focus().redo().run()}
-                className="inline-flex size-7 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
-              >
-                <Redo2 className="size-3.5" />
-              </button>
-            </>
-          )}
+      {/* 工具条：左侧编辑动作、右侧保存态与页数，合成一条（不再单占一条状态栏）。
+          <768px 时语法检查 / JD 匹配 / 源码折叠进「更多」，避免换行把工具条撑高 */}
+      <div
+        className="flex h-11 shrink-0 items-center gap-1.5 overflow-hidden border-b px-3"
+        data-testid="editor-toolbar"
+      >
+        {editor && (
+          <>
+            <button
+              type="button"
+              title="撤销（Ctrl+Z）"
+              aria-label="撤销"
+              disabled={!editor.can().undo()}
+              onClick={() => editor.chain().focus().undo().run()}
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
+            >
+              <Undo2 className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              title="重做（Ctrl+Y）"
+              aria-label="重做"
+              disabled={!editor.can().redo()}
+              onClick={() => editor.chain().focus().redo().run()}
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-35"
+            >
+              <Redo2 className="size-3.5" />
+            </button>
+          </>
+        )}
+        <span className="mx-0.5 h-4 w-px shrink-0 bg-border" />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              disabled={!hasSelection}
+              aria-label="AI 助手"
+              aria-pressed={false}
+              title={!hasSelection ? '先选中要处理的文本' : undefined}
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs text-primary transition-colors hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-45"
+            >
+              <Sparkles className="size-3.5" /> AI 助手
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-56">
+            {AI_MODES.map((m) => (
+              <DropdownMenuItem key={m.id} className="gap-2" onClick={() => onAiRef.current(m.id)}>
+                <div className="flex flex-col">
+                  <span className="text-[13px] leading-tight">{m.title}</span>
+                  <span className="text-xs leading-tight text-muted-foreground">{m.desc}</span>
+                </div>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {compact ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                disabled={!hasSelection}
-                title={!hasSelection ? '先选中要处理的文本' : undefined}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs text-primary transition-colors hover:bg-primary/10 disabled:pointer-events-none disabled:opacity-45"
+                aria-label="更多编辑工具"
+                data-testid="editor-more"
+                className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
               >
-                <Sparkles className="size-3.5" /> AI 助手
+                <MoreHorizontal className="size-3.5" /> 更多
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              {AI_MODES.map((m) => (
-                <DropdownMenuItem key={m.id} className="gap-2" onClick={() => onAiRef.current(m.id)}>
-                  <div className="flex flex-col">
-                    <span className="text-[13px] leading-tight">{m.title}</span>
-                    <span className="text-[11px] leading-tight text-muted-foreground">{m.desc}</span>
-                  </div>
+            <DropdownMenuContent align="start" className="w-52">
+              <DropdownMenuItem disabled={checking} className="gap-2" onClick={onGrammarCheck}>
+                {checking ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <SpellCheck2 className="size-4" />
+                )}
+                语法检查
+              </DropdownMenuItem>
+              {onJdMatch && (
+                <DropdownMenuItem className="gap-2" onClick={onJdMatch}>
+                  <ScanSearch className="size-4" /> JD 匹配
                 </DropdownMenuItem>
-              ))}
+              )}
+              <DropdownMenuItem className="gap-2" onClick={toggleSourceMode}>
+                <FileCode2 className="size-4" />
+                <span className="flex-1">源码模式</span>
+                {sourceMode && <Check className="size-3.5 text-primary" />}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button2
-            disabled={checking}
-            onClick={onGrammarCheck}
-            label="语法检查"
-            icon={
-              checking ? <Loader2 className="size-3.5 animate-spin" /> : <SpellCheck2 className="size-3.5" />
-            }
-          />
-          {onJdMatch && (
-            <Button2 onClick={onJdMatch} label="JD 匹配" icon={<ScanSearch className="size-3.5" />} />
-          )}
-          <Button2
-            onClick={toggleSourceMode}
-            label="源码"
-            accent={sourceMode}
-            icon={<FileCode2 className="size-3.5" />}
-          />
-        </div>
-        <span
-          className={cn(
-            'flex items-center gap-1.5 text-xs',
-            saveState === 'saved' ? 'text-muted-foreground' : 'text-primary'
-          )}
-        >
-          {saveState === 'saving' ? (
-            <>
-              <Loader2 className="size-3 animate-spin" /> 保存中…
-            </>
-          ) : saveState === 'dirty' ? (
-            <>
-              <span className="size-1.5 rounded-full bg-primary" /> 待保存
-            </>
-          ) : (
-            <>
-              <CircleCheck className="size-3" /> 已保存
-            </>
-          )}
+        ) : (
+          <>
+            <Button2
+              disabled={checking}
+              onClick={onGrammarCheck}
+              label="语法检查"
+              icon={
+                checking ? <Loader2 className="size-3.5 animate-spin" /> : <SpellCheck2 className="size-3.5" />
+              }
+            />
+            {onJdMatch && (
+              <Button2 onClick={onJdMatch} label="JD 匹配" icon={<ScanSearch className="size-3.5" />} />
+            )}
+            <Button2
+              onClick={toggleSourceMode}
+              label="源码"
+              accent={sourceMode}
+              icon={<FileCode2 className="size-3.5" />}
+            />
+          </>
+        )}
+
+        {/* 右侧：页数/撑满程度 + 保存态（信息价值高的常驻，块数已去除） */}
+        <span className="ml-auto flex min-w-0 shrink-0 items-center gap-2 pl-2">
+          {pageMetrics &&
+            (pageMetrics.pageCount > 1 ? (
+              <span
+                className="truncate text-xs font-medium text-amber-600 dark:text-amber-400"
+                title={
+                  pageMetrics.smartOnePage
+                    ? '内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整'
+                    : '开启「智能一页」可自动压缩至恰好一页'
+                }
+              >
+                内容 {pageMetrics.pageCount} 页{pageMetrics.smartOnePage ? '' : ' · 可开启智能一页'}
+              </span>
+            ) : pageMetrics.fill >= 0.98 ? (
+              pageMetrics.fitted ? (
+                <span
+                  className="truncate text-xs text-muted-foreground"
+                  title={
+                    pageMetrics.density > 0
+                      ? '智能一页已收紧排版密度，恰好一页'
+                      : pageMetrics.expand > 0
+                        ? '智能一页已放大行距与节距，撑满整页'
+                        : '智能一页已整体放大内容，撑满整页'
+                  }
+                >
+                  {pageMetrics.density > 0
+                    ? `已压缩至 1 页 · 密度档 ${pageMetrics.density}`
+                    : pageMetrics.expand > 0
+                      ? `已撑满至 1 页 · 舒展档 ${pageMetrics.expand}`
+                      : '已撑满至 1 页'}
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">1 页</span>
+              )
+            ) : pageMetrics.smartOnePage ? (
+              /* 内容明显不足一页：已尽力舒展 + 放大，但受"字号合理上限"约束，如实报出实际占比 */
+              <span
+                className="truncate text-xs text-muted-foreground"
+                title={`内容约 ${Math.round(pageMetrics.fill * 100)}% 页高。已把行距、节距与整体尺寸放到上限；再补充内容可让页面更饱满（字号继续放大会显得虚假）。`}
+              >
+                未满页 · 填充 {Math.round(pageMetrics.fill * 100)}%
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">1 页</span>
+            ))}
+          <span
+            className={cn(
+              'flex shrink-0 items-center gap-1.5 text-xs',
+              saveState === 'saved' ? 'text-muted-foreground' : 'text-primary'
+            )}
+          >
+            {saveState === 'saving' ? (
+              <>
+                <Loader2 className="size-3 animate-spin" /> 保存中…
+              </>
+            ) : saveState === 'dirty' ? (
+              <>
+                <span className="size-1.5 rounded-full bg-primary" /> 待保存
+              </>
+            ) : (
+              <>
+                <CircleCheck className="size-3" /> 已保存
+              </>
+            )}
+          </span>
         </span>
       </div>
 
@@ -724,34 +861,14 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
         )}
       </div>
 
-      {/* 状态栏 */}
-      <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
-        <span className="min-w-0 truncate">
-          {sourceMode
-            ? '源码模式：Markdown 实时同步预览与自动保存，点「源码」切回块编辑'
-            : '# 标题 · - 列表 · 1. 编号 · > 引用 · --- 分割线 · **加粗** · 直接打 Markdown 即时转换'}
-        </span>
-        <span className="ml-2 flex shrink-0 items-center gap-2">
-          {pageMetrics &&
-            (pageMetrics.pageCount > 1 ? (
-              <span
-                className="font-medium text-amber-600 dark:text-amber-400"
-                title={
-                  pageMetrics.smartOnePage
-                    ? '内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整'
-                    : '开启「智能一页」可自动压缩至恰好一页'
-                }
-              >
-                内容 {pageMetrics.pageCount} 页{pageMetrics.smartOnePage ? '' : ' · 可开启智能一页'}
-              </span>
-            ) : pageMetrics.smartOnePage && pageMetrics.density > 0 ? (
-              <span title="智能一页已收紧排版密度，恰好一页">已压缩至 1 页 · 密度档 {pageMetrics.density}</span>
-            ) : (
-              <span>1 页</span>
-            ))}
-          <span className="font-mono">{blockCount} 块</span>
-        </span>
-      </div>
+      {/* 源码模式提示条：仅源码态出现（常驻的 Markdown 语法提示已移入空文档占位与快捷键弹窗） */}
+      {sourceMode && (
+        <div className="flex h-7 shrink-0 items-center border-t bg-muted/30 px-3 text-xs text-muted-foreground">
+          <span className="min-w-0 truncate">
+            源码模式：Markdown 实时同步预览与自动保存，点「源码」切回块编辑
+          </span>
+        </div>
+      )}
 
       {/* 悬浮工具栏（选中文本）：主行 + 可展开的更多工具行 */}
       {bubblePos && editor && (
@@ -959,7 +1076,8 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
   )
 })
 
-/* 工具条小按钮（保持原 Editor 工具条视觉） */
+/* 工具条小按钮（保持原 Editor 工具条视觉）。
+   accent 同时作为“开关态”语义：补 aria-pressed，避免状态只靠颜色表达 */
 function Button2({
   label,
   sub,
@@ -980,10 +1098,12 @@ function Button2({
       type="button"
       disabled={disabled}
       onClick={onClick}
+      aria-label={label}
+      aria-pressed={accent === undefined ? undefined : accent}
       className={cn(
-        'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-45',
+        'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors disabled:pointer-events-none disabled:opacity-45',
         accent
-          ? 'text-primary hover:bg-primary/10'
+          ? 'bg-primary/10 text-primary hover:bg-primary/15'
           : 'text-foreground hover:bg-accent hover:text-accent-foreground'
       )}
     >

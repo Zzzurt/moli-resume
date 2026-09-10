@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Loader2 } from 'lucide-react'
 import { getResume, updateResume, addSnapshot } from '@/lib/db'
 import type { ResumeSnapshot } from '@/lib/db'
 import { isTiptapDoc } from '@/lib/docUtils'
@@ -50,6 +50,8 @@ export function EditorPage() {
   const [missing, setMissing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
+  /** 导出阶段（步骤序号 + 文案）：导出耗时可达数秒，只给静态文案用户会以为卡死 */
+  const [exportStage, setExportStage] = useState<{ step: number; label: string } | null>(null)
   const [checking, setChecking] = useState(false)
   /** 自动保存失败重试计数：变化触发保存 effect 重跑 */
   const [saveRetry, setSaveRetry] = useState(0)
@@ -65,12 +67,15 @@ export function EditorPage() {
   /** JD 匹配弹窗（分析时快照当前简历全文） */
   const [jdMatchOpen, setJdMatchOpen] = useState(false)
   const [jdMarkdown, setJdMarkdown] = useState('')
-  /** 页面度量（Preview 上报）：状态栏页数 + 导出超页检测 */
+  /** 页面度量（Preview 上报）：状态栏页数/撑满程度 + 导出超页检测 */
   const [pageMetrics, setPageMetrics] = useState<{
     pageCount: number
     density: number
+    expand: number
+    fill: number
+    fitted: boolean
     smartOnePage: boolean
-  }>({ pageCount: 1, density: 0, smartOnePage: true })
+  }>({ pageCount: 1, density: 0, expand: 0, fill: 1, fitted: false, smartOnePage: true })
   const pageMetricsRef = useRef(pageMetrics)
   /** 导出超页确认弹窗 */
   const [exportPageConfirm, setExportPageConfirm] = useState(false)
@@ -285,15 +290,17 @@ export function EditorPage() {
     const paper = paperRef.current
     if (!paper) return
     setExporting(true)
+    setExportStage({ step: 0, label: '准备导出…' })
     try {
       // 按需加载导出模块（html2canvas + jsPDF 约 550KB），不进首屏
       const { exportPaperToPdf } = await import('@/lib/pdf')
-      await exportPaperToPdf(paper, title.trim() || '简历')
+      await exportPaperToPdf(paper, title.trim() || '简历', setExportStage)
       toast.success('PDF 已导出')
     } catch (e) {
       toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
       setExporting(false)
+      setExportStage(null)
     }
   }
 
@@ -322,14 +329,16 @@ export function EditorPage() {
     const paper = paperRef.current
     if (!paper) return
     setExporting(true)
+    setExportStage({ step: 0, label: '准备导出…' })
     try {
       const { exportPaperToPng } = await import('@/lib/pdf')
-      await exportPaperToPng(paper, `${title.trim() || '简历'}-长图`)
+      await exportPaperToPng(paper, `${title.trim() || '简历'}-长图`, setExportStage)
       toast.success('长图 PNG 已导出')
     } catch (e) {
       toast.error(`导出失败：${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
       setExporting(false)
+      setExportStage(null)
     }
   }
 
@@ -473,10 +482,37 @@ export function EditorPage() {
         onShortcuts={() => setShortcutsOpen(true)}
       />
 
+      {/* 导出进度：3 步（渲染 → 生成 → 写入），只在导出期间出现，不常驻占高 */}
+      {exportStage && (
+        <div
+          role="progressbar"
+          aria-label="导出进度"
+          aria-valuenow={exportStage.step + 1}
+          aria-valuemin={1}
+          aria-valuemax={3}
+          className="flex h-7 shrink-0 items-center gap-2 border-b bg-primary/5 px-3 text-xs text-primary"
+        >
+          <Loader2 className="size-3 shrink-0 animate-spin" />
+          <span className="min-w-0 truncate">{exportStage.label}</span>
+          <span className="ml-auto flex shrink-0 items-center gap-1">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className={cn('h-1 w-5 rounded-full', i <= exportStage.step ? 'bg-primary' : 'bg-primary/20')}
+              />
+            ))}
+          </span>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* 窄屏：编辑/预览标签页切换（lg 及以上隐藏） */}
         {isNarrow && (
-          <div className="flex h-10 shrink-0 items-center justify-center gap-1 border-b bg-card">
+          <div
+            role="tablist"
+            aria-label="编辑或预览"
+            className="flex h-10 shrink-0 items-center justify-center gap-1 border-b bg-card"
+          >
             {(
               [
                 ['edit', '编辑'],
@@ -486,6 +522,8 @@ export function EditorPage() {
               <button
                 key={k}
                 type="button"
+                role="tab"
+                aria-selected={mobileView === k}
                 data-testid={`mobile-view-${k}`}
                 className={
                   'rounded-md px-5 py-1.5 text-xs font-medium transition-colors ' +
@@ -561,6 +599,7 @@ export function EditorPage() {
             layoutClass={settings.layout === 'standard' ? '' : `layout-${settings.layout}`}
             smartOnePage={settings.smartOnePage}
             accentColor={settings.accentColor}
+            paperTone={settings.paperTone ?? 'white'}
             onMetrics={(m) => {
               pageMetricsRef.current = m
               setPageMetrics(m)
@@ -614,7 +653,7 @@ export function EditorPage() {
           <DialogHeader>
             <DialogTitle>内容超过一页</DialogTitle>
             <DialogDescription>
-              当前简历共 {pageMetricsRef.current.pageCount} 页。开启「智能一页」可自动收紧排版并压缩至恰好一页（字号不变，密度微调）。
+              当前简历共 {pageMetricsRef.current.pageCount} 页。开启「智能一页」会自动收紧排版并压缩至恰好一页（字号不变，密度微调）。
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2">

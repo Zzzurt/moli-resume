@@ -8,10 +8,18 @@ import { jsPDF } from 'jspdf'
 const A4_WIDTH_MM = 210
 const A4_HEIGHT_MM = 297
 
+/** 导出阶段上报：{ 步骤序号, 文案 }，供 UI 显示进度（导出耗时可能数秒，不能只有静态文案） */
+export interface ExportStage {
+  step: number
+  label: string
+}
+export type OnExportStage = (stage: ExportStage) => void
+
 /** 截取整张纸张（含多页）为一张画布：导出态 + 祖先 transform 临时还原，PDF/PNG 共用 */
-async function capturePaper(paperEl: HTMLElement): Promise<HTMLCanvasElement> {
+async function capturePaper(paperEl: HTMLElement, onStage?: OnExportStage): Promise<HTMLCanvasElement> {
   // 导出态：隐藏分页线等仅预览元素
   paperEl.classList.add('exporting')
+  onStage?.({ step: 0, label: '正在渲染页面（长文档可能需要几秒）…' })
   // 预览纸张外层带 transform:scale() 缩放，html2canvas 对祖先变换处理不可靠：
   // 导出期间临时还原为 1:1（纸张由滚动容器裁切，仅短暂视觉变化），结束后恢复
   const restores: (() => void)[] = []
@@ -43,8 +51,13 @@ async function capturePaper(paperEl: HTMLElement): Promise<HTMLCanvasElement> {
   }
 }
 
-export async function exportPaperToPdf(paperEl: HTMLElement, filename: string): Promise<void> {
-  const canvas = await capturePaper(paperEl)
+export async function exportPaperToPdf(
+  paperEl: HTMLElement,
+  filename: string,
+  onStage?: OnExportStage
+): Promise<void> {
+  const canvas = await capturePaper(paperEl, onStage)
+  onStage?.({ step: 1, label: '正在分页生成 PDF…' })
 
   const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
   // 一页 A4 对应的 canvas 像素高度（向上取整，保证单页内容完整落在第一页）
@@ -76,8 +89,13 @@ export async function exportPaperToPdf(paperEl: HTMLElement, filename: string): 
 }
 
 /** 长图 PNG：整张纸张（多页纵向拼接）导出为一张图，适合社交/群聊分享 */
-export async function exportPaperToPng(paperEl: HTMLElement, filename: string): Promise<void> {
-  const canvas = await capturePaper(paperEl)
+export async function exportPaperToPng(
+  paperEl: HTMLElement,
+  filename: string,
+  onStage?: OnExportStage
+): Promise<void> {
+  const canvas = await capturePaper(paperEl, onStage)
+  onStage?.({ step: 1, label: '正在编码图片…' })
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
   if (!blob) throw new Error('生成图片失败')
   const url = URL.createObjectURL(blob)

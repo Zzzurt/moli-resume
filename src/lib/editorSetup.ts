@@ -69,7 +69,8 @@ export function createEditorExtensions(onSlashOpen: (pos: number) => void) {
   return [
     StarterKit,
     Placeholder.configure({
-      placeholder: '输入 / 唤起块菜单…',
+      // 空文档时承担 Markdown 快捷输入的发现入口（原先常驻状态栏的语法提示已移除）
+      placeholder: '输入 / 唤起块菜单，或直接打 # 标题、- 列表、**加粗** 即时转换…',
       showOnlyWhenEditable: true,
     }),
     Link.configure({ openOnClick: false }),

@@ -120,6 +120,20 @@ export async function deleteResume(id: number): Promise<void> {
   await db.resumes.delete(id)
 }
 
+/**
+ * 恢复被删除的简历（供删除 toast 的「撤销」使用）。
+ * 保留原 id 重新写回：版本历史快照按 resumeId 关联，换 id 会让快照失联。
+ * 若同 id 已被占用（理论上不会：id 由自增分配），则退回新增。
+ */
+export async function restoreResume(resume: Resume): Promise<void> {
+  const existing = resume.id != null ? await db.resumes.get(resume.id) : undefined
+  if (existing) {
+    await db.resumes.update(resume.id!, { ...resume })
+    return
+  }
+  await db.resumes.put(resume)
+}
+
 /* ---------- 全量备份 / 恢复 ---------- */
 
 export interface BackupFile {

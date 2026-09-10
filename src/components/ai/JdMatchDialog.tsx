@@ -321,7 +321,7 @@ export function JdMatchDialog({
                             {g.severity && (
                               <span
                                 className={cn(
-                                  'ml-1.5 inline-block rounded px-1 py-px text-[10px] align-middle',
+                                  'ml-1.5 inline-block rounded px-1 py-px text-[11px] align-middle',
                                   g.severity.includes('严重')
                                     ? 'bg-red-500/15 text-red-600 dark:text-red-400'
                                     : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
@@ -368,7 +368,7 @@ export function JdMatchDialog({
 
                             {st.phase === 'idle' && (
                               <>
-                                <p className="mt-1 rounded bg-muted/60 px-2 py-1 font-mono text-[11px] leading-relaxed">
+                                <p className="mt-1 rounded bg-muted/60 px-2 py-1 font-mono text-xs leading-relaxed">
                                   {s.original}
                                 </p>
                                 <p className="mt-1 text-xs leading-relaxed">
@@ -399,7 +399,7 @@ export function JdMatchDialog({
                                   compact
                                 />
                                 {st.live && (
-                                  <pre className="mt-1.5 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 px-2 py-1 font-mono text-[11px] leading-relaxed scrollbar-thin">
+                                  <pre className="mt-1.5 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 px-2 py-1 font-mono text-xs leading-relaxed scrollbar-thin">
                                     {st.live}
                                   </pre>
                                 )}
@@ -413,23 +413,23 @@ export function JdMatchDialog({
                             {st.phase === 'diff' && !st.error && (
                               <div className="mt-1.5 space-y-1">
                                 <div className="rounded border border-red-500/20 bg-red-500/5 p-1.5">
-                                  <span className="text-[10px] font-medium text-red-600 dark:text-red-400">
+                                  <span className="text-[11px] font-medium text-red-600 dark:text-red-400">
                                     改前
                                   </span>
                                   <DiffLines
                                     parts={lineParts(st.before ?? '', st.after ?? '')}
                                     side="before"
-                                    className="font-mono text-[11px] leading-relaxed"
+                                    className="font-mono text-xs leading-relaxed"
                                   />
                                 </div>
                                 <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-1.5">
-                                  <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                                  <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
                                     改后
                                   </span>
                                   <DiffLines
                                     parts={lineParts(st.before ?? '', st.after ?? '')}
                                     side="after"
-                                    className="font-mono text-[11px] leading-relaxed"
+                                    className="font-mono text-xs leading-relaxed"
                                   />
                                 </div>
                                 <div className="flex justify-end gap-1.5 pt-0.5">

@@ -28,7 +28,7 @@ import { useSettings } from '@/hooks/useSettings'
 import { chatCompletion, aiErrorMessage } from '@/lib/aiService'
 import { exportBackup, importBackup, type BackupFile } from '@/lib/db'
 import { downloadFile, parseJson, pickTextFile } from '@/lib/fileIO'
-import type { AiProfile, LayoutMode } from '@/types'
+import type { AiProfile, LayoutMode, PaperTone } from '@/types'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -42,6 +42,13 @@ const LAYOUT_OPTIONS: { id: LayoutMode; label: string; desc: string }[] = [
   { id: 'standard', label: '标准', desc: '模板默认' },
   { id: 'compact', label: '紧凑', desc: '页边距/行距收紧，单页容纳更多' },
   { id: 'loose', label: '宽松', desc: '更松的节奏与更大的字距' },
+]
+
+/** 预览纸张观感（纯屏幕偏好，导出不受影响） */
+const PAPER_TONES: { id: PaperTone; label: string; desc: string }[] = [
+  { id: 'white', label: '亮白纸', desc: '打印件原色' },
+  { id: 'dim', label: '降亮度', desc: '深色工作区下长时间看更舒服' },
+  { id: 'warm', label: '暖色纸', desc: '偏米黄，接近阅读纸' },
 ]
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
@@ -304,9 +311,38 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               </button>
             ))}
           </div>
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
-            作用范围：编辑画布、A4 预览与所有导出；「智能一页」在其基础上自动收紧以适配一页。
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            作用范围：编辑画布、A4 预览与所有导出；「智能一页」在其基础上自动收紧或舒展，
+            双向适配到一页。
           </p>
+
+          {/* 纸张只影响预览观感：白纸在深色工作区里长时间盯着容易累 */}
+          <div className="space-y-1.5 pt-1">
+            <div className="text-xs font-medium">预览纸张</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {PAPER_TONES.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  title={t.desc}
+                  aria-pressed={(settings.paperTone ?? 'white') === t.id}
+                  data-testid={`paper-${t.id}`}
+                  className={cn(
+                    'rounded-md border px-2 py-1.5 text-xs font-medium transition-colors',
+                    (settings.paperTone ?? 'white') === t.id
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:bg-accent'
+                  )}
+                  onClick={() => update('paperTone', t.id)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              只改屏幕上的纸面观感（深色模式久看不累）；导出 PDF / 长图 / 打印始终是纯白纸。
+            </p>
+          </div>
         </section>
 
         <Separator />

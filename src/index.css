@@ -553,6 +553,45 @@
   display: none !important;
 }
 
+/* 纸张观感浮层（降亮度 / 暖色纸）：叠在纸张之上，仅屏幕阅读用。
+   它是 .resume-paper 的兄弟节点而非子节点 —— 导出截取的是纸张本体、
+   打印克隆的也是纸张本体，故导出/打印永远是纯白纸。
+   pointer-events:none：不能挡住「点击预览块 → 定位编辑器」的命中测试 */
+.paper-tone-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.paper-tone-dim {
+  background: rgba(30, 41, 59, 0.07);
+}
+.paper-tone-warm {
+  background: rgba(196, 150, 74, 0.11);
+  mix-blend-mode: multiply;
+}
+.exporting .paper-tone-overlay,
+[data-print-sheet] .paper-tone-overlay {
+  display: none !important;
+}
+
+/* 模板切换柔化：整套排版瞬时替换会「跳」，用淡入包住变化。
+   只改 opacity（不参与布局），不影响智能一页的高度测量 */
+@keyframes tpl-fade-kf {
+  from {
+    opacity: 0.4;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.tpl-fade {
+  animation: tpl-fade-kf 260ms ease-out;
+}
+.exporting .tpl-fade,
+[data-print-sheet] .tpl-fade {
+  animation: none !important;
+}
+
 /* 预览块 → data-index 可视化定位 */
 .resume-paper [data-index] {
   border-radius: 3px;
@@ -624,6 +663,33 @@
   --rs-lstk: 0.4;
   --rs-litk: 0.3;
   --rs-hrgk: 0.45;
+}
+
+/* ---------- 反向舒展（内容不足一页时撑满纸面） ----------
+   与上面两档同一套乘数，只是方向相反（> 1）：字号完全不动，
+   只把行高、节距、列表距、页边距摊开，观感是「排版更舒展」而不是「字被拉大」。
+   量级与 rs-compact / rs-tight 大致对称（约 +25% / +55% 的间距总量）。 */
+.rs-airy {
+  --rs-lhk: 1.12;
+  --rs-pyk: 1.26;
+  --rs-h2tk: 1.35;
+  --rs-h2bk: 1.2;
+  --rs-h3tk: 1.3;
+  --rs-pgk: 1.35;
+  --rs-lstk: 1.3;
+  --rs-litk: 1.7;
+  --rs-hrgk: 1.35;
+}
+.rs-roomy {
+  --rs-lhk: 1.26;
+  --rs-pyk: 1.55;
+  --rs-h2tk: 1.8;
+  --rs-h2bk: 1.45;
+  --rs-h3tk: 1.7;
+  --rs-pgk: 1.8;
+  --rs-lstk: 1.7;
+  --rs-litk: 2.4;
+  --rs-hrgk: 1.8;
 }
 
 /* ============================================================

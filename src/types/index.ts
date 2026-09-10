@@ -29,6 +29,12 @@ export type ThemeMode = 'light' | 'dark'
 /** 手动排版档位：标准 / 紧凑 / 宽松（用户固定偏好；智能一页在其上自动收紧） */
 export type LayoutMode = 'standard' | 'compact' | 'loose'
 
+/**
+ * 预览纸张观感（仅影响屏幕阅读，导出恒为纯白纸——简历的最终形态是打印件）。
+ * white 亮白 / dim 降亮度（深色工作区下长时间看不刺眼）/ warm 暖色纸
+ */
+export type PaperTone = 'white' | 'dim' | 'warm'
+
 export interface AppSettings {
   theme: ThemeMode
   aiBaseUrl: string
@@ -46,6 +52,8 @@ export interface AppSettings {
   accentColor?: string
   /** 手动排版档位 */
   layout: LayoutMode
+  /** 预览纸张观感（仅预览；导出恒为纯白） */
+  paperTone?: PaperTone
 }
 
 /** AI 模型配置档 */
@@ -147,4 +155,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   splitRatio: 0.42,
   smartOnePage: true,
   layout: 'standard',
+  paperTone: 'white',
 }

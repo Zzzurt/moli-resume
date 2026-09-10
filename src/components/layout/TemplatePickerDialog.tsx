@@ -61,7 +61,7 @@ export function TemplatePickerDialog({
                   <span className="truncate text-xs font-semibold">{t.name}</span>
                   {template === t.id && <Check className="ml-auto size-3.5 shrink-0 text-primary" />}
                 </div>
-                <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{t.description}</p>
+                <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{t.description}</p>
               </div>
             </button>
           ))}

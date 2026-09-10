@@ -176,7 +176,7 @@ export function PolishDialog({
           <div className="min-h-0 rounded-md border bg-muted/40 p-3">
             <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               原文
-              {parts && <span className="font-normal normal-case text-[10px]">（红 = 移除/改前）</span>}
+              {parts && <span className="font-normal normal-case text-[11px]">（红 = 移除/改前）</span>}
             </div>
             {parts ? (
               <DiffLines
@@ -195,7 +195,7 @@ export function PolishDialog({
               {aiModeTitle(mode)}后
               {result && <ArrowRight className="size-3" />}
               {parts && (
-                <span className="font-normal normal-case text-[10px] text-emerald-600 dark:text-emerald-400">
+                <span className="font-normal normal-case text-[11px] text-emerald-600 dark:text-emerald-400">
                   （绿 = 新增/改后）
                 </span>
               )}
@@ -212,7 +212,7 @@ export function PolishDialog({
                     {live}
                   </pre>
                 ) : (
-                  <div className="flex h-24 items-center justify-center text-center text-[11px] leading-relaxed text-muted-foreground">
+                  <div className="flex h-24 items-center justify-center text-center text-xs leading-relaxed text-muted-foreground">
                     正在把简历片段与指令发给模型
                     <br />
                     首字生成通常需要几秒，请稍候

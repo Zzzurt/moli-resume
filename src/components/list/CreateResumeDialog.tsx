@@ -114,7 +114,7 @@ export function CreateResumeDialog({ open, onOpenChange, onCreated }: CreateResu
                         <span className={`size-2 shrink-0 rounded-[3px] ${t.dotClass}`} />
                         <span className="truncate text-xs font-semibold">{t.name}</span>
                       </div>
-                      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                      <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                         {t.description}
                       </p>
                     </div>
@@ -148,7 +148,7 @@ export function CreateResumeDialog({ open, onOpenChange, onCreated }: CreateResu
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 {previewEntry?.description}
               </p>
-              <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 将以示例文档创建一份新简历，可随时在编辑器内切换其他模板。
               </p>
               <div className="mt-auto flex flex-col gap-2 pt-4">

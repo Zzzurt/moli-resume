@@ -84,7 +84,7 @@ async function main() {
       .catch(() => false)
     if (hasEmpty) {
       await sampleBtn.click()
-      await page.getByText('块编辑器').waitFor({ timeout: 10000 })
+      await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
       await page.goto(`${BASE}/#/`)
     }
     await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
@@ -101,7 +101,7 @@ async function main() {
     const blank = page.getByTestId('create-blank')
     await blank.waitFor({ timeout: 10000 })
     await blank.click()
-    await page.getByText('块编辑器').waitFor({ timeout: 10000 })
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
     ok('editor opens (blank via dialog)')
 
     /* 2b. 新建对话框：选模板 → 放大预览 → 使用此模板 */
@@ -114,7 +114,7 @@ async function main() {
     const useBtn = page.getByTestId('use-template')
     await useBtn.waitFor({ timeout: 5000 })
     await useBtn.click()
-    await page.getByText('块编辑器').waitFor({ timeout: 10000 })
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
     const pillCanvas = page.locator('.editor-canvas.tpl-pill')
     if ((await pillCanvas.count()) === 1) ok('create from template (pill)')
     else throw new Error('editor canvas missing tpl-pill class')
@@ -288,8 +288,11 @@ async function main() {
   }
 
   try {
-    /* 2j. 状态栏页数：单页显示「1 页」；超长内容显示多页警告 */
-    await page.getByText('1 页', { exact: true }).waitFor({ timeout: 5000 })
+    /* 2j. 状态栏页数：单页只报单页信息（可能是「1 页」/「已撑满至 1 页」/「未满页 · 填充 N%」，
+       短内容被智能一页舒展后不再是纯「1 页」）；超长内容显示多页警告 */
+    const shortBar = (await page.locator('[data-testid="editor-toolbar"]').textContent()) || ''
+    if (!/1 页|未满页/.test(shortBar)) throw new Error(`单页状态栏文案异常：${shortBar}`)
+    if (/内容 \d+ 页/.test(shortBar)) throw new Error('短内容不应出现多页警告')
     ok('statusbar page count (single page)')
     const longMd = Array.from(
       { length: 60 },
@@ -663,10 +666,181 @@ async function main() {
     await page.getByRole('menuitem', { name: '删除' }).click()
     await page.getByRole('button', { name: '删除', exact: true }).waitFor({ timeout: 3000 })
     await page.getByRole('button', { name: '删除', exact: true }).click()
-    await page.getByText('已删除').waitFor({ timeout: 5000 })
+    await page.getByText('已删除').first().waitFor({ timeout: 5000 })
     ok('delete confirm dialog')
   } catch (e) {
     fail('delete confirm dialog', e)
+  }
+
+  try {
+    /* 2n-1. 窄屏顶栏：不横向溢出（<768 折叠进「更多」），工具条不换行撑高，功能仍可达。
+       回归背景：实测顶栏完整操作组最小需 768px，390px 下曾整页横向溢出 342px */
+    for (const w of [390, 480, 640]) {
+      const narrowCtx = await browser.newContext({ viewport: { width: w, height: 860 } })
+      const np = await narrowCtx.newPage()
+      await np.goto(`${BASE}/#/`)
+      await np.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+      const nid = await idbAddResume(np, '窄屏测试', '# 窄屏\n\n一段内容。', 'minimal')
+      await np.goto(`${BASE}/#/resume/${nid}`)
+      await np.reload()
+      await np.locator('.editor-canvas').waitFor({ timeout: 15000 })
+      await np.waitForTimeout(600)
+      const m = await np.evaluate(() => ({
+        over: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        toolbarH: document.querySelector('[data-testid="editor-toolbar"]')?.getBoundingClientRect().height,
+      }))
+      if (m.over > 0) throw new Error(`W${w}：页面横向溢出 ${m.over}px（顶栏未折叠）`)
+      if (m.toolbarH !== 44) throw new Error(`W${w}：工具条高度 ${m.toolbarH}px，期望 44（仍会换行）`)
+      /* 「更多」菜单里关键入口仍可达（模板 / 导出 Word / 设置） */
+      await np.getByTestId('header-more').click()
+      await np.getByRole('menuitem', { name: /^模板/ }).waitFor({ timeout: 3000 })
+      await np.getByRole('menuitem', { name: /导出 Word/ }).waitFor({ timeout: 3000 })
+      await np.keyboard.press('Escape')
+      /* 编辑器工具条「更多」含语法检查 / JD 匹配 */
+      await np.getByTestId('editor-more').click()
+      await np.getByRole('menuitem', { name: '语法检查' }).waitFor({ timeout: 3000 })
+      await np.getByRole('menuitem', { name: /JD 匹配/ }).waitFor({ timeout: 3000 })
+      await np.keyboard.press('Escape')
+      await narrowCtx.close()
+    }
+    ok('narrow header + toolbar fold, no horizontal overflow')
+  } catch (e) {
+    fail('narrow header fold', e)
+  }
+
+  try {
+    /* 2n-2. 列表搜索 / 清除搜索 / 无结果态 */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    await idbAddResume(page, 'ZZZ 唯一标题', '# ZZZ\n\n一段内容。', 'minimal')
+    await page.reload()
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    const total = await page.locator('[role="button"]').count()
+    const search = page.getByTestId('resume-search')
+    await search.fill('ZZZ 唯一标题')
+    await page.waitForTimeout(300)
+    const hit = await page.locator('[role="button"]').count()
+    if (hit !== 1) throw new Error(`搜索命中 ${hit} 张卡片，期望 1`)
+    await search.fill('绝不存在的关键字qqq')
+    await page.waitForTimeout(300)
+    if ((await page.locator('[role="button"]').count()) !== 0) throw new Error('无结果时仍在渲染卡片')
+    await page.getByRole('button', { name: '清除搜索' }).click()
+    await page.waitForTimeout(300)
+    const back = await page.locator('[role="button"]').count()
+    if (back !== total) throw new Error(`清除搜索后 ${back} 张卡片，期望 ${total}`)
+    ok('list search + no-match state')
+  } catch (e) {
+    fail('list search', e)
+  }
+
+  try {
+    /* 2n-3. 删除可撤销：卡片数 -1 → 点提示条「撤销」→ 恢复原 id 与标题 */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    await idbAddResume(page, '撤销测试简历', '# 撤销测试\n\n一段内容。', 'minimal')
+    await page.reload()
+    await page.locator('[role="button"]').first().waitFor({ timeout: 10000 })
+    const before = await page.locator('[role="button"]').count()
+    const card = page.getByText('撤销测试简历').first()
+    const cardBox = page.locator('[role="button"]').filter({ hasText: '撤销测试简历' }).first()
+    await cardBox.hover()
+    await cardBox.locator('button[aria-label="文档操作"]').click()
+    await page.getByRole('menuitem', { name: '删除' }).click()
+    await page.getByRole('button', { name: '删除', exact: true }).click()
+    await page.getByText('已删除').first().waitFor({ timeout: 5000 })
+    await page.waitForTimeout(400)
+    const afterDel = await page.locator('[role="button"]').count()
+    if (afterDel !== before - 1) throw new Error(`删除后 ${afterDel} 张卡片，期望 ${before - 1}`)
+    await page.getByRole('button', { name: '撤销' }).click()
+    await page.getByText('已恢复', { exact: false }).first().waitFor({ timeout: 5000 })
+    await page.waitForTimeout(400)
+    const afterUndo = await page.locator('[role="button"]').count()
+    if (afterUndo !== before) throw new Error(`撤销后 ${afterUndo} 张卡片，期望 ${before}`)
+    if (!(await card.isVisible())) throw new Error('撤销后标题未恢复')
+    ok('delete undo restores resume')
+  } catch (e) {
+    fail('delete undo', e)
+  }
+
+  try {
+    /* 2n-4. 预览纸张观感：降亮度浮层只存在于预览层（兄弟节点），不在纸张内部 → 导出不带 */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    const toneId = await idbAddResume(page, '纸张观感测试', longMd, 'minimal')
+    await page.goto(`${BASE}/#/resume/${toneId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.getByRole('button', { name: '设置' }).click()
+    await page.getByTestId('paper-dim').waitFor({ timeout: 5000 })
+    await page.getByTestId('paper-dim').click()
+    await page.waitForTimeout(400)
+    if ((await page.locator('.paper-tone-overlay.paper-tone-dim').count()) !== 1)
+      throw new Error('未出现降亮度浮层')
+    if ((await page.locator('[data-testid="resume-paper"] .paper-tone-overlay').count()) !== 0)
+      throw new Error('浮层落在纸张内部，会被导出到 PDF/长图')
+    await page.getByTestId('paper-white').click()
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    ok('preview paper tone stays on screen only')
+  } catch (e) {
+    fail('preview paper tone', e)
+  }
+
+  try {
+    /* 2o-1. 智能一页双向适配：内容不足一页时也要撑满（原先只有"超页才压缩"）。
+       6 个块的内容应进入舒展档并报「已撑满至 1 页」 */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('button', { name: '新建简历' }).waitFor({ timeout: 10000 })
+    const shortMd = Array.from(
+      { length: 6 },
+      () => '## 段落标题\n\n- 条目内容用于撑高页面，包含一些描述文字。\n- 第二条目内容。'
+    ).join('\n\n')
+    const growId = await idbAddResume(page, '短内容撑满', shortMd, 'minimal')
+    await page.goto(`${BASE}/#/resume/${growId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 10000 })
+    await page.waitForTimeout(3200) /* 等智能一页收敛（静默期 1.35s + 余量） */
+    const layerCls = (await page.locator('.rs-scale-layer').first().getAttribute('class')) || ''
+    if (!/rs-airy|rs-roomy/.test(layerCls))
+      throw new Error(`内容不足一页未进入舒展档：${layerCls}`)
+    await page.getByText(/已撑满至 1 页/).first().waitFor({ timeout: 5000 })
+    /* 节奏档不能挂在模板根上：会被 React 已提交的档盖住量尺的临时档 → 决策失真 */
+    const rootCls =
+      (await page.locator('.rs-scale-layer > *').first().getAttribute('class')) ||
+      ''
+    if (/rs-airy|rs-roomy|rs-compact|rs-tight/.test(rootCls))
+      throw new Error(`模板根不应挂节奏档：${rootCls}`)
+    ok('smart one page expands short content to fill')
+  } catch (e) {
+    fail('smart one page expand', e)
+  }
+
+  try {
+    /* 2o-2. 编辑后档位不来回跳：历史 bug 是量尺被模板根盖住 → 提交了一个错误中间档
+       （预览先松后紧跳一下）。一次内容变化只允许一次档位切换。 */
+    const readCls = () =>
+      page.evaluate(() => {
+        const el = document.querySelector('.rs-scale-layer')
+        return (
+          ['rs-compact', 'rs-tight', 'rs-airy', 'rs-roomy'].find((c) => el?.classList.contains(c)) ??
+          '原始'
+        )
+      })
+    await page.locator('.ProseMirror').click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('## 追加板块\n\n- 新增条目，用于改变文档高度并触发重新收敛。')
+    const seq = []
+    for (let i = 0; i < 20; i++) {
+      await page.waitForTimeout(200)
+      seq.push(await readCls())
+    }
+    let flips = 0
+    for (let i = 1; i < seq.length; i++) if (seq[i] !== seq[i - 1]) flips++
+    if (flips > 1) throw new Error(`档位来回切换 ${flips} 次：${[...new Set(seq)].join(' → ')} [${seq.join(',')}]`)
+    ok('smart one page level changes at most once per edit')
+  } catch (e) {
+    fail('smart one page stability', e)
   }
 
   if (pageErrors.length) {

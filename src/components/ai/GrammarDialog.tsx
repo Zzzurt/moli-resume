@@ -161,7 +161,7 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
                               {s.suggestion}
                             </span>
                           </p>
-                          <p className="text-[11px] leading-relaxed text-muted-foreground">
+                          <p className="text-xs leading-relaxed text-muted-foreground">
                             {s.reason}
                           </p>
                         </div>
