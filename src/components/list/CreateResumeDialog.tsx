@@ -12,6 +12,7 @@ import { TEMPLATES, type TemplateId } from '@/types'
 import { TEMPLATE_SNAPSHOT_URLS } from '@/generated/templateSnapshots'
 import { createResume } from '@/lib/db'
 import { DEFAULT_RESUME_CONTENT, DEFAULT_RESUME_TITLE } from '@/lib/defaultResume'
+import { toast } from 'sonner'
 
 interface CreateResumeDialogProps {
   open: boolean
@@ -36,13 +37,18 @@ export function CreateResumeDialog({ open, onOpenChange, onCreated }: CreateResu
   }, [open])
 
   const create = async (template?: TemplateId) => {
-    const id = await createResume({
-      title: DEFAULT_RESUME_TITLE,
-      content: DEFAULT_RESUME_CONTENT,
-      ...(template ? { template } : {}),
-    })
-    onOpenChange(false)
-    onCreated(id)
+    try {
+      const id = await createResume({
+        title: DEFAULT_RESUME_TITLE,
+        content: DEFAULT_RESUME_CONTENT,
+        ...(template ? { template } : {}),
+      })
+      onOpenChange(false)
+      onCreated(id)
+    } catch (e) {
+      /* IndexedDB 写入失败（配额满 / 隐私模式禁用）：给出反馈而不是让弹窗卡住不动 */
+      toast.error(`创建失败：${e instanceof Error ? e.message : '未知错误'}`)
+    }
   }
 
   const previewEntry = previewTpl ? TEMPLATES.find((t) => t.id === previewTpl) : undefined

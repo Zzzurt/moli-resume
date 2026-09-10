@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { JSONContent } from '@tiptap/react'
+import { nodeText } from '@/lib/docUtils'
 
 /**
  * Tiptap JSON → React 渲染器（预览侧）。
@@ -133,8 +134,11 @@ function Block({ node, index, indexed = false }: { node: JSONContent; index: num
       )
     case 'horizontalRule':
       return <hr {...di} />
-    case 'image':
-      return <img {...di} src={node.attrs?.src} alt={node.attrs?.alt ?? ''} />
+    case 'image': {
+      const src = safeImageSrc(node.attrs?.src)
+      if (!src) return null
+      return <img {...di} src={src} alt={node.attrs?.alt ?? ''} />
+    }
     case 'codeBlock':
       return (
         <pre {...di}>
@@ -166,7 +170,10 @@ function Block({ node, index, indexed = false }: { node: JSONContent; index: num
         </table>
       )
     default:
-      return null
+      /* 未知块类型不能静默返回 null：编辑器（Tiptap 按 schema 渲染）里看得见的内容
+         在预览里凭空消失，会被误判成「模板坏了」。降级渲染其纯文本，保证不丢内容。 */
+      if (node.type === 'text') return <p {...di}>{node.text}</p>
+      return nodeText(node) ? <p {...di}>{nodeText(node)}</p> : null
   }
 }
 
@@ -174,8 +181,15 @@ function Block({ node, index, indexed = false }: { node: JSONContent; index: num
 function renderInline(nodes: JSONContent[] = []): ReactNode[] {
   return nodes.map((n, i) => {
     if (n.type === 'hardBreak') return <br key={i} />
-    if (n.type === 'image') return <img key={i} src={n.attrs?.src} alt={n.attrs?.alt ?? ''} />
-    if (n.type !== 'text') return null
+    if (n.type === 'image') {
+      const src = safeImageSrc(n.attrs?.src)
+      return src ? <img key={i} src={src} alt={n.attrs?.alt ?? ''} /> : null
+    }
+    if (n.type !== 'text') {
+      // 未知行内节点：降级为纯文本，避免静默丢内容
+      const t = nodeText(n)
+      return t ? <span key={i}>{t}</span> : null
+    }
     return (
       <Marks key={i} marks={n.marks ?? []}>
         {n.text ?? ''}
@@ -192,6 +206,20 @@ function safeHref(href: unknown): string | null {
   // 无协议的相对路径/锚点同样放行
   if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed
   return null
+}
+
+/**
+ * 图片地址白名单：与 safeHref 同源加固。
+ * 证件照是 dataURL，正文配图允许 http(s)：其余协议（data:text/html、javascript: 等）
+ * 一律拒绝，避免导入的备份文件把外部地址（可用于探测/回传）塞进来。
+ */
+function safeImageSrc(src: unknown): string | undefined {
+  if (typeof src !== 'string') return undefined
+  const trimmed = src.trim()
+  if (/^data:image\//i.test(trimmed)) return trimmed
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed
+  return undefined
 }
 
 function Marks({ marks, children }: { marks: JSONContent[]; children: ReactNode }) {

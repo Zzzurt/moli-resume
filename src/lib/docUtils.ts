@@ -46,10 +46,14 @@ export function splitSidebarNodes(doc: JSONContent): {
   }
 }
 
-/** 递归提取节点内全部纯文本 */
-export function nodeText(node: JSONContent): string {
+/**
+ * 递归提取节点内全部纯文本。
+ * 带深度上限：文档可能来自导入的备份文件，畸形/超深嵌套不应把调用栈打爆。
+ */
+export function nodeText(node: JSONContent, depth = 0): string {
   if (node.type === 'text') return node.text ?? ''
-  return (node.content ?? []).map(nodeText).join('')
+  if (depth > 50) return ''
+  return (node.content ?? []).map((child) => nodeText(child, depth + 1)).join('')
 }
 
 /**

@@ -45,9 +45,9 @@ export function DiffLines({
           key={i}
           className={cn(
             '-mx-2 whitespace-pre-wrap break-words px-2',
-            l.type === 'added' && 'bg-emerald-500/15 text-emerald-900 dark:text-emerald-200',
+            l.type === 'added' && 'bg-success/15 text-diff-add',
             l.type === 'removed' &&
-              'bg-red-500/10 text-red-900/70 line-through decoration-red-400/60 dark:text-red-200/70'
+              'bg-destructive/10 text-diff-del/70 line-through decoration-destructive/50'
           )}
         >
           {l.text}

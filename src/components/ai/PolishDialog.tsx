@@ -195,7 +195,7 @@ export function PolishDialog({
               {aiModeTitle(mode)}后
               {result && <ArrowRight className="size-3" />}
               {parts && (
-                <span className="font-normal normal-case text-[11px] text-emerald-600 dark:text-emerald-400">
+                <span className="font-normal normal-case text-[11px] text-success">
                   （绿 = 新增/改后）
                 </span>
               )}

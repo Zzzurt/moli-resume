@@ -44,6 +44,10 @@ export function moveBlock(editor: Editor, fromIndex: number, targetIndex: number
   if (fromIndex < 0 || fromIndex >= nodes.length || fromIndex === targetIndex) return
   const [moved] = nodes.splice(fromIndex, 1)
   const insertAt = Math.max(0, Math.min(targetIndex > fromIndex ? targetIndex - 1 : targetIndex, nodes.length))
+  /* 边界情况（首块上移 / 末块下移 / 拖到紧邻自身的位置）算出的落点与原位置相同：
+     此时不能派发事务——否则文档内容没变，撤销栈却多出一笔记录，
+     用户按 Ctrl+Z 会先"撤销"一次什么都没发生 */
+  if (insertAt === fromIndex) return
   nodes.splice(insertAt, 0, moved)
   const tr = editor.state.tr
   tr.replaceWith(0, editor.state.doc.content.size, Fragment.fromArray(nodes))
@@ -83,6 +87,16 @@ export function DragHandleLayer({ editor, containerRef }: DragHandleLayerProps) 
 
   const dragRef = useRef<{ fromIndex: number; startY: number; moved: boolean } | null>(null)
   const dropTargetRef = useRef<number | null>(null)
+  /** 拖拽期间挂在 window 上的监听清理器：组件若中途卸载需补一次清理 */
+  const dragCleanupRef = useRef<(() => void) | null>(null)
+
+  /* 卸载兜底：拖拽过程中被卸载（切页/换简历）时不清理会留下 window 监听与残留状态 */
+  useEffect(
+    () => () => {
+      dragCleanupRef.current?.()
+    },
+    []
+  )
 
   /* 手柄跟随鼠标所在块 */
   useEffect(() => {
@@ -136,7 +150,9 @@ export function DragHandleLayer({ editor, containerRef }: DragHandleLayerProps) 
   const onHandleDown = (e: React.MouseEvent) => {
     if (!handle) return
     e.preventDefault()
-    const fromIndex = handle.index
+    /* 捕获非空快照：onUp 是提升的函数声明，TS 无法把外层的 null 检查带进它的闭包 */
+    const at = handle
+    const fromIndex = at.index
     dragRef.current = { fromIndex, startY: e.clientY, moved: false }
     setDragging(true)
 
@@ -166,9 +182,15 @@ export function DragHandleLayer({ editor, containerRef }: DragHandleLayerProps) 
       }
     }
 
-    const onUp = () => {
+    /* detach / onUp 用函数声明（提升），避免互相引用时的声明顺序问题 */
+    function detach() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      dragCleanupRef.current = null
+    }
+
+    function onUp() {
+      detach()
       const d = dragRef.current
       dragRef.current = null
       setDragging(false)
@@ -179,8 +201,13 @@ export function DragHandleLayer({ editor, containerRef }: DragHandleLayerProps) 
         if (target !== null) moveBlock(editor, d.fromIndex, target)
       } else {
         // 点击 → 打开块菜单
-        setMenu({ index: d.fromIndex, x: handle.left, y: handle.top })
+        setMenu({ index: d.fromIndex, x: at.left, y: at.top })
       }
+    }
+
+    dragCleanupRef.current = () => {
+      detach()
+      dragRef.current = null
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)

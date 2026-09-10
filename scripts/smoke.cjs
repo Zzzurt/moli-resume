@@ -843,6 +843,128 @@ async function main() {
     fail('smart one page stability', e)
   }
 
+  try {
+    /* 2p-1. 表格在 Markdown 往返中不丢：列对齐 + 多段落单元格 + 单元格内竖线。
+       历史 bug：单元格多一个段落时整张表被写成 `[table]` 占位符，内容全丢；
+       对齐属性也没有 GFM 标记，源码模式改一笔就全部丢失（且自动保存会落库）。 */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+    const mp = (t) => ({ type: 'paragraph', content: [{ type: 'text', text: t }] })
+    const th = (t, align) => ({ type: 'tableHeader', attrs: { align }, content: [mp(t)] })
+    const td = (t, align, extra) => ({
+      type: 'tableCell',
+      attrs: { align },
+      content: extra ? [mp(t), mp(extra)] : [mp(t)],
+    })
+    const tableDoc = JSON.stringify({
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: '陈墨' }] },
+        {
+          type: 'table',
+          content: [
+            { type: 'tableRow', content: [th('年份', 'right'), th('经历', 'center')] },
+            { type: 'tableRow', content: [td('2022', 'right'), td('某公司', 'center', '第二段')] },
+          ],
+        },
+      ],
+    })
+    const tableId = await idbAddResume(page, '表格保真', tableDoc, 'minimal')
+    await page.goto(`${BASE}/#/resume/${tableId}`)
+    await page.reload()
+    await page.locator('.editor-canvas').waitFor({ timeout: 15000 })
+    await page.waitForTimeout(800)
+    const readAligns = () =>
+      page.evaluate(() =>
+        [...document.querySelectorAll('.ProseMirror table th, .ProseMirror table td')].map((c) => ({
+          align: c.getAttribute('data-align'),
+          text: c.textContent,
+        }))
+      )
+    const alignsBefore = await readAligns()
+    if (alignsBefore.length !== 4) throw new Error(`表格未正确渲染：${alignsBefore.length} 个单元格`)
+
+    /* 导出 .md：必须是管道表格，含 GFM 对齐标记，且单元格内容不丢 */
+    const [mdDl] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      (async () => {
+        await page.getByRole('button', { name: '文件' }).click()
+        await page.getByRole('menuitem', { name: /导出 \.md/ }).click()
+      })(),
+    ])
+    const mdTable = fs.readFileSync(await mdDl.path(), 'utf-8')
+    if (mdTable.includes('[table]')) throw new Error('表格被写成 [table] 占位符')
+    if (!mdTable.includes('---:') || !mdTable.includes(':---:')) throw new Error('缺少 GFM 对齐标记')
+    if (!mdTable.includes('第二段')) throw new Error('多段落单元格内容丢失')
+
+    /* 源码模式往返（真实改一笔才会回写）后对齐必须保持 */
+    await page.getByRole('button', { name: '源码', exact: true }).click()
+    const srcBox = page.getByTestId('source-editor')
+    await srcBox.waitFor({ timeout: 5000 })
+    await srcBox.click()
+    await page.keyboard.press('Control+End')
+    await page.keyboard.type('\n\n## 触发回写')
+    await page.waitForTimeout(900)
+    await page.getByRole('button', { name: '源码', exact: true }).click()
+    await page.locator('.ProseMirror').waitFor({ timeout: 5000 })
+    await page.waitForTimeout(500)
+    const alignsAfter = await readAligns()
+    if (alignsAfter.length !== alignsBefore.length)
+      throw new Error(`往返后单元格数变化：${alignsBefore.length} → ${alignsAfter.length}`)
+    alignsAfter.forEach((c, i) => {
+      if (c.align !== alignsBefore[i].align)
+        throw new Error(`第 ${i} 格对齐 ${alignsBefore[i].align} → ${c.align}`)
+    })
+    ok('markdown roundtrip preserves table cells + alignment')
+  } catch (e) {
+    fail('table markdown fidelity', e)
+  }
+
+  try {
+    /* 2p-2. 备份不含任何明文密钥：顶层 aiApiKey 与配置档内的 apiKey 都必须清空
+       （UI 明确承诺「不含 API Key」，只剥顶层字段会漏掉 aiProfiles[].apiKey） */
+    await page.goto(`${BASE}/#/`)
+    await page.getByRole('heading', { name: '我的简历' }).waitFor({ timeout: 15000 })
+    await page.evaluate(
+      () =>
+        new Promise((resolve, reject) => {
+          const open = indexedDB.open('ink-resume')
+          open.onsuccess = () => {
+            const db = open.result
+            const tx = db.transaction('settings', 'readwrite')
+            const store = tx.objectStore('settings')
+            store.put({ key: 'aiApiKey', value: 'sk-top-secret' })
+            store.put({
+              key: 'aiProfiles',
+              value: [
+                { id: 'p1', name: '档1', baseUrl: 'https://x/v1', model: 'm', apiKey: 'sk-profile-secret' },
+              ],
+            })
+            tx.oncomplete = () => {
+              db.close()
+              resolve()
+            }
+            tx.onerror = () => reject(tx.error)
+          }
+        })
+    )
+    await page.reload()
+    await page.getByRole('button', { name: '设置' }).click()
+    const [bkDl] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.getByRole('button', { name: '导出 JSON' }).click(),
+    ])
+    const backup = fs.readFileSync(await bkDl.path(), 'utf-8')
+    if (backup.includes('sk-top-secret') || backup.includes('sk-profile-secret')) {
+      throw new Error('备份文件包含明文密钥')
+    }
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(300)
+    ok('backup export contains no api keys')
+  } catch (e) {
+    fail('backup key hygiene', e)
+  }
+
   if (pageErrors.length) {
     fail('no page errors', pageErrors.join(' | '))
   } else {

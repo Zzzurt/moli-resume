@@ -374,6 +374,17 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               <Upload className="size-3.5" /> 导入恢复
             </Button>
           </div>
+          {/* 数据按站点(origin)隔离：localhost 与 127.0.0.1 是两个不同站点，
+              换地址访问会"看起来数据没了"。这里把当前站点摆明，便于自行判断 */}
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            当前数据绑定在此站点：
+            <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+              {typeof window !== 'undefined' ? window.location.origin : ''}
+            </code>
+            <br />
+            浏览器按站点隔离本地数据，换一个地址（如把 localhost 换成 127.0.0.1）会读到另一份空数据，
+            请始终用同一个地址打开。
+          </p>
         </section>
       </DialogContent>
       </Dialog>

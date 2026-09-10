@@ -35,9 +35,11 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE_NAME).then((c) => c.put('./index.html', copy)).catch(() => {})
           return res
         })
-        .catch(() =>
-          caches.match('./index.html').then((hit) => hit || caches.match(request))
-        )
+        .catch(async () => {
+          const hit = (await caches.match('./index.html')) || (await caches.match(request))
+          // respondWith(undefined) 会直接报错：这里必须给出一个真实响应兜底
+          return hit || new Response('离线且无缓存', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+        })
     )
     return
   }

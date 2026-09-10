@@ -29,6 +29,11 @@ export default {
           DEFAULT: 'hsl(var(--destructive))',
           foreground: 'hsl(var(--destructive-foreground))',
         },
+        /* 语义化状态色（见 index.css 的 --success/--warning/--diff-*） */
+        success: 'hsl(var(--success))',
+        warning: 'hsl(var(--warning))',
+        'diff-add': 'hsl(var(--diff-add-fg))',
+        'diff-del': 'hsl(var(--diff-del-fg))',
         muted: {
           DEFAULT: 'hsl(var(--muted))',
           foreground: 'hsl(var(--muted-foreground))',

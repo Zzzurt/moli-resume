@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   ScanSearch,
@@ -76,6 +76,27 @@ function SectionTitle({ children }: { children: ReactNode }) {
 }
 
 /**
+ * 改前 / 改后对照栏。
+ * lineParts 是行级 LCS 差分，两栏结果完全相同——抽到同一个组件里算一次即可。
+ * （原先两栏各调一次，在多张建议卡片同时处于 diff 态时开销成倍）
+ */
+function DiffPair({ before, after }: { before: string; after: string }) {
+  const parts = useMemo(() => lineParts(before, after), [before, after])
+  return (
+    <>
+      <div className="rounded border border-destructive/20 bg-destructive/5 p-1.5">
+        <span className="text-[11px] font-medium text-destructive">改前</span>
+        <DiffLines parts={parts} side="before" className="font-mono text-xs leading-relaxed" />
+      </div>
+      <div className="rounded border border-success/20 bg-success/5 p-1.5">
+        <span className="text-[11px] font-medium text-success">改后</span>
+        <DiffLines parts={parts} side="after" className="font-mono text-xs leading-relaxed" />
+      </div>
+    </>
+  )
+}
+
+/**
  * JD 匹配分析：贴入职位描述，AI 对照简历全文输出结构化匹配报告。
  * 分析型能力——报告只读；改进建议支持**连续逐条改写**：卡片内 AI 改写（流式）→
  * diff 对照 → 应用到简历对应位置（闪烁定位），全程不关闭弹窗、不中断其余建议。
@@ -100,9 +121,20 @@ export function JdMatchDialog({
   const [cards, setCards] = useState<Record<number, CardState>>({})
   /** 当前分析的中止控制器（「停止」按钮触发 abort） */
   const abortRef = useRef<AbortController | null>(null)
+  /** 各建议卡片改写请求的中止控制器（可同时改写多条） */
+  const rewriteAborts = useRef(new Map<number, AbortController>())
+
+  /** 中止全部在途请求：不中止的话流式请求会继续跑完，白耗额度并往已关闭的组件回写 state */
+  const abortAll = useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    rewriteAborts.current.forEach((ac) => ac.abort())
+    rewriteAborts.current.clear()
+  }, [])
 
   const run = async () => {
     if (!jd.trim()) return
+    abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
     setLoading(true)
@@ -127,21 +159,22 @@ export function JdMatchDialog({
         setError(aiErrorMessage(e))
       }
     } finally {
-      abortRef.current = null
+      if (abortRef.current === ac) abortRef.current = null
       setLoading(false)
     }
   }
 
   useEffect(() => {
-    if (open) {
-      setReport(null)
-      setError(null)
-      setStopped(false)
-      setLive(null)
-      setCards({})
-      /* 保留上次输入的 JD，便于微调后重新分析 */
-    }
-  }, [open])
+    if (!open) return
+    setReport(null)
+    setError(null)
+    setStopped(false)
+    setLive(null)
+    setCards({})
+    /* 保留上次输入的 JD，便于微调后重新分析 */
+    // 关闭弹窗或卸载时中止在途请求
+    return () => abortAll()
+  }, [open, abortAll])
 
   // stopped 也算已运行：停止后停留在报告区展示「已停止分析」，而非退回输入态
   const hasRun = report !== null || loading || live !== null || stopped
@@ -154,20 +187,30 @@ export function JdMatchDialog({
       return
     }
     setCards((c) => ({ ...c, [i]: { phase: 'running' } }))
+    const ac = new AbortController()
+    rewriteAborts.current.set(i, ac)
     try {
       const after = await aiAssist(
         { baseUrl: settings.aiBaseUrl, apiKey: settings.aiApiKey, model: settings.aiModel },
         'ask',
         loc.markdown,
         s.instruction,
-        { onDelta: (partial) => setCards((c) => ({ ...c, [i]: { phase: 'running', live: partial } })) }
+        {
+          onDelta: (partial) => setCards((c) => ({ ...c, [i]: { phase: 'running', live: partial } })),
+          signal: ac.signal,
+        }
       )
+      // 已中止（关闭了弹窗）：不把半成品写成 diff
+      if (ac.signal.aborted) return
       setCards((c) => ({
         ...c,
         [i]: { phase: 'diff', before: loc.markdown, after, range: loc.range },
       }))
     } catch (e) {
+      if (isAbortedError(e)) return
       setCards((c) => ({ ...c, [i]: { phase: 'diff', error: aiErrorMessage(e) } }))
+    } finally {
+      rewriteAborts.current.delete(i)
     }
   }
 
@@ -293,12 +336,12 @@ export function JdMatchDialog({
                 {report.covered.length > 0 && (
                   <>
                     <SectionTitle>
-                      <CircleCheck className="mr-1 inline size-3.5 text-emerald-500" /> 已覆盖的要求
+                      <CircleCheck className="mr-1 inline size-3.5 text-success" /> 已覆盖的要求
                     </SectionTitle>
                     <ul className="mt-1.5 flex flex-col gap-1">
                       {report.covered.map((c, i) => (
                         <li key={i} className="flex gap-2 text-xs leading-relaxed">
-                          <CircleCheck className="mt-0.5 size-3 shrink-0 text-emerald-500" />
+                          <CircleCheck className="mt-0.5 size-3 shrink-0 text-success" />
                           <span className="min-w-0">{renderInline(c, `c${i}`)}</span>
                         </li>
                       ))}
@@ -310,12 +353,12 @@ export function JdMatchDialog({
                 {report.gaps.length > 0 && (
                   <>
                     <SectionTitle>
-                      <AlertTriangle className="mr-1 inline size-3.5 text-amber-500" /> 缺失或薄弱项
+                      <AlertTriangle className="mr-1 inline size-3.5 text-warning" /> 缺失或薄弱项
                     </SectionTitle>
                     <ul className="mt-1.5 flex flex-col gap-1">
                       {report.gaps.map((g, i) => (
                         <li key={i} className="flex gap-2 text-xs leading-relaxed">
-                          <AlertTriangle className="mt-0.5 size-3 shrink-0 text-amber-500" />
+                          <AlertTriangle className="mt-0.5 size-3 shrink-0 text-warning" />
                           <span className="min-w-0">
                             {renderInline(g.text, `g${i}`)}
                             {g.severity && (
@@ -323,8 +366,8 @@ export function JdMatchDialog({
                                 className={cn(
                                   'ml-1.5 inline-block rounded px-1 py-px text-[11px] align-middle',
                                   g.severity.includes('严重')
-                                    ? 'bg-red-500/15 text-red-600 dark:text-red-400'
-                                    : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                    ? 'bg-destructive/15 text-destructive'
+                                    : 'bg-warning/15 text-warning'
                                 )}
                               >
                                 {g.severity}
@@ -352,7 +395,7 @@ export function JdMatchDialog({
                             data-testid={`jd-suggestion-${i}`}
                             className={cn(
                               'rounded-md border bg-card p-2.5 transition-colors',
-                              st.phase === 'applied' && 'border-emerald-500/40 bg-emerald-500/5'
+                              st.phase === 'applied' && 'border-success/40 bg-success/5'
                             )}
                           >
                             <div className="flex items-start justify-between gap-2">
@@ -360,7 +403,7 @@ export function JdMatchDialog({
                                 {renderInline(s.reason, `r${i}`)}
                               </p>
                               {st.phase === 'applied' && (
-                                <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                                <span className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-success">
                                   <CircleCheckBig className="size-3.5" /> 已应用
                                 </span>
                               )}
@@ -412,26 +455,7 @@ export function JdMatchDialog({
 
                             {st.phase === 'diff' && !st.error && (
                               <div className="mt-1.5 space-y-1">
-                                <div className="rounded border border-red-500/20 bg-red-500/5 p-1.5">
-                                  <span className="text-[11px] font-medium text-red-600 dark:text-red-400">
-                                    改前
-                                  </span>
-                                  <DiffLines
-                                    parts={lineParts(st.before ?? '', st.after ?? '')}
-                                    side="before"
-                                    className="font-mono text-xs leading-relaxed"
-                                  />
-                                </div>
-                                <div className="rounded border border-emerald-500/20 bg-emerald-500/5 p-1.5">
-                                  <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                                    改后
-                                  </span>
-                                  <DiffLines
-                                    parts={lineParts(st.before ?? '', st.after ?? '')}
-                                    side="after"
-                                    className="font-mono text-xs leading-relaxed"
-                                  />
-                                </div>
+                                <DiffPair before={st.before ?? ''} after={st.after ?? ''} />
                                 <div className="flex justify-end gap-1.5 pt-0.5">
                                   <Button
                                     size="sm"
@@ -454,7 +478,7 @@ export function JdMatchDialog({
                             )}
 
                             {st.phase === 'applied' && (
-                              <p className="mt-1 text-xs leading-relaxed text-emerald-700 dark:text-emerald-300">
+                              <p className="mt-1 text-xs leading-relaxed text-success">
                                 {renderInline(s.instruction, `d${i}`)}
                               </p>
                             )}
@@ -463,7 +487,7 @@ export function JdMatchDialog({
                       })}
                     </div>
                     {appliedCount > 0 && appliedCount === report.suggestions.length && (
-                      <p className="mt-2 rounded bg-emerald-500/10 px-2 py-1.5 text-center text-[11px] text-emerald-700 dark:text-emerald-300">
+                      <p className="mt-2 rounded bg-success/10 px-2 py-1.5 text-center text-[11px] text-success">
                         全部建议已处理。可关闭报告，在简历中继续微调。
                       </p>
                     )}

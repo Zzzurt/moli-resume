@@ -14,7 +14,17 @@ export default defineConfig({
   base: './',
   server: {
     port: 5173,
-    host: true,
+    /* 默认只监听本机：此前是 host: true（0.0.0.0），局域网内任何设备都能打开
+       这个开发服务器。虽然应用本身没有服务端密钥，dev server 仍会暴露源码与
+       /@fs 文件读取面，没必要默认敞开。
+       需要用手机连局域网调试时：npm run dev -- --host（或临时改成 host: true）。 */
+    host: '127.0.0.1',
+    /* ⚠️ 不要用 vite 的 --open 打开浏览器：
+       Vite 按监听地址推算要打开的 URL，绑定 127.0.0.1 时它会打开
+       http://127.0.0.1:5173/ —— 而浏览器按 origin 隔离 IndexedDB，
+       localhost 与 127.0.0.1 是两个不同站点，用户会「看起来数据全没了」
+       （旧数据其实还在另一个 origin 下）。
+       统一由 启动墨历.bat 打开固定的 http://localhost:5173/。 */
   },
   build: {
     target: 'es2020',

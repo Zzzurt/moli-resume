@@ -1,34 +1,68 @@
 /** 浏览器文件读写工具：.md / .json 导入导出 */
 
-export function downloadFile(content: string, filename: string, mime: string): void {
-  const blob = new Blob([content], { type: `${mime};charset=utf-8` })
+/** 触发浏览器下载：统一处理「插入 DOM → 点击 → 延迟回收」，跨浏览器更稳 */
+export function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  // Safari 要求节点在文档中 click 才生效
   document.body.appendChild(a)
   a.click()
   a.remove()
+  /* 立即 revoke 会让部分浏览器来不及取数据（下载被取消）：
+     延迟回收，给下载留出启动时间 */
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-/** 打开文件选择框，读取为文本 */
+export function downloadFile(content: string, filename: string, mime: string): void {
+  downloadBlob(new Blob([content], { type: `${mime};charset=utf-8` }), filename)
+}
+
+/**
+ * 字节 → 文本。
+ * 先按 UTF-8 解；出现替换字符说明不是 UTF-8 —— Windows 上的中文 .md 常存成 GBK，
+ * 直接按 UTF-8 读会整篇乱码。此时用 GBK 复解，取替换字符更少的一侧。
+ */
+function decodeBytes(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf)
+  const utf8 = new TextDecoder('utf-8').decode(bytes)
+  const badCount = (s: string) => (s.match(/\uFFFD/g) ?? []).length
+  if (badCount(utf8) === 0) return utf8
+  try {
+    const gbk = new TextDecoder('gbk').decode(bytes)
+    return badCount(gbk) < badCount(utf8) ? gbk : utf8
+  } catch {
+    // 环境不支持 gbk 标签：保持 UTF-8 结果
+    return utf8
+  }
+}
+
+/** 打开文件选择框，读取为文本；用户取消时同样 resolve(null) */
 export function pickTextFile(accept: string): Promise<{ name: string; text: string } | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = accept
+    let settled = false
+    const done = (v: { name: string; text: string } | null) => {
+      if (settled) return
+      settled = true
+      resolve(v)
+    }
     input.onchange = () => {
       const file = input.files?.[0]
       if (!file) {
-        resolve(null)
+        done(null)
         return
       }
       const reader = new FileReader()
-      reader.onload = () => resolve({ name: file.name, text: String(reader.result ?? '') })
-      reader.onerror = () => resolve(null)
-      reader.readAsText(file, 'utf-8')
+      reader.onload = () => done({ name: file.name, text: decodeBytes(reader.result as ArrayBuffer) })
+      reader.onerror = () => done(null)
+      reader.readAsArrayBuffer(file)
     }
+    /* 取消选择时不会触发 change：不处理会让 await 永久挂起、界面毫无反馈 */
+    input.oncancel = () => done(null)
     input.click()
   })
 }

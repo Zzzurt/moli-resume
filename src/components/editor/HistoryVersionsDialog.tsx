@@ -37,9 +37,19 @@ export function HistoryVersionsDialog({ open, onOpenChange, resumeId, onRestore 
   const [restoring, setRestoring] = useState<ResumeSnapshot | null>(null)
 
   useEffect(() => {
-    if (open) {
-      setSnapshots(null)
-      void listSnapshots(resumeId).then(setSnapshots)
+    if (!open) return
+    let cancelled = false
+    setSnapshots(null)
+    listSnapshots(resumeId)
+      .then((list) => {
+        if (!cancelled) setSnapshots(list)
+      })
+      /* 读取失败（IndexedDB 异常）时给空列表：否则永远停在「读取中…」，用户无从判断 */
+      .catch(() => {
+        if (!cancelled) setSnapshots([])
+      })
+    return () => {
+      cancelled = true
     }
   }, [open, resumeId])
 

@@ -14,6 +14,7 @@ import {
 } from 'docx'
 import type { JSONContent } from '@tiptap/react'
 import { markdownToDoc } from '@/lib/editorSetup'
+import { downloadBlob } from '@/lib/fileIO'
 
 /**
  * Word（.docx）导出：把 Tiptap JSON 结构化映射为 docx 段落/表格。
@@ -54,16 +55,25 @@ function inlineRuns(node: InlineLike): (TextRun | ExternalHyperlink)[] {
   ]
 }
 
-/** 段落/列表项/引用 → Paragraph */
-function blockParagraph(node: JSONContent, bullet?: boolean, numbering?: string, quote = false): Paragraph {
+/**
+ * 递归收集块内的行内节点 → TextRun / ExternalHyperlink。
+ * 段落、标题、引用、列表项共用（此前段落与标题各手写了一份同样的递归）。
+ */
+function collectRuns(nodes: JSONContent[] | undefined): (TextRun | ExternalHyperlink)[] {
   const runs: (TextRun | ExternalHyperlink)[] = []
-  const collect = (nodes: JSONContent[] | undefined) => {
-    for (const child of nodes ?? []) {
+  const walk = (list: JSONContent[] | undefined) => {
+    for (const child of list ?? []) {
       if (child.type === 'text' || child.type === 'inline') runs.push(...inlineRuns(child as InlineLike))
-      else collect(child.content)
+      else walk(child.content)
     }
   }
-  collect(node.content)
+  walk(nodes)
+  return runs
+}
+
+/** 段落/列表项/引用 → Paragraph */
+function blockParagraph(node: JSONContent, bullet?: boolean, numbering?: string, quote = false): Paragraph {
+  const runs = collectRuns(node.content)
   if (node.type === 'codeBlock') {
     const lines = String((node.content ?? []).map((c) => c.text ?? '').join('') ?? '').split('\n')
     return new Paragraph({
@@ -100,14 +110,7 @@ function renderChildren(nodes: JSONContent[] | undefined): (Paragraph | Table)[]
     switch (node.type) {
       case 'heading': {
         const level = Math.min(6, Math.max(1, (node.attrs?.level as number) ?? 1)) as 1 | 2 | 3 | 4 | 5 | 6
-        const runs: (TextRun | ExternalHyperlink)[] = []
-        const collect = (ns: JSONContent[] | undefined) => {
-          for (const c of ns ?? []) {
-            if (c.type === 'text' || c.type === 'inline') runs.push(...inlineRuns(c as InlineLike))
-            else collect(c.content)
-          }
-        }
-        collect(node.content)
+        const runs = collectRuns(node.content)
         out.push(
           new Paragraph({
             heading: ([HeadingLevel.HEADING_1, HeadingLevel.HEADING_2, HeadingLevel.HEADING_3, HeadingLevel.HEADING_4, HeadingLevel.HEADING_5, HeadingLevel.HEADING_6] as const)[level - 1],
@@ -205,10 +208,8 @@ export async function exportResumeDocx(content: string, filename: string): Promi
   }
   if (!doc) doc = markdownToDoc(content)
   const blob = await Packer.toBlob(buildDocx(doc))
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename.toLowerCase().endsWith('.docx') ? filename : `${filename}.docx`
-  a.click()
-  URL.revokeObjectURL(url)
+  const name = filename.toLowerCase().endsWith('.docx') ? filename : `${filename}.docx`
+  // 复用统一的下载实现（插入 DOM + 延迟回收 URL）：自己拼 anchor 时立即 revoke
+  // 会让部分浏览器来不及取数据，下载被取消
+  downloadBlob(blob, name)
 }

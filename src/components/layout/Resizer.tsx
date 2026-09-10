@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 interface ResizerProps {
@@ -10,12 +10,15 @@ interface ResizerProps {
 
 /** 左右分栏的可拖动分割线 */
 export function Resizer({ onResize, ratio }: ResizerProps) {
-  const dragging = useRef(false)
+  /* 拖拽态要参与 className（高亮/把手常显），必须是 state：
+     用 ref 的话改了不会重渲染，高亮永远不出现 */
+  const [dragging, setDragging] = useState(false)
+  const draggingRef = useRef(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const onPointerMove = useCallback(
     (e: MouseEvent) => {
-      if (!dragging.current || !containerRef.current) return
+      if (!draggingRef.current || !containerRef.current) return
       const parent = containerRef.current.parentElement
       if (!parent) return
       const rect = parent.getBoundingClientRect()
@@ -26,7 +29,8 @@ export function Resizer({ onResize, ratio }: ResizerProps) {
   )
 
   const stop = useCallback(() => {
-    dragging.current = false
+    draggingRef.current = false
+    setDragging(false)
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
   }, [])
@@ -45,13 +49,18 @@ export function Resizer({ onResize, ratio }: ResizerProps) {
       ref={containerRef}
       role="separator"
       aria-orientation="vertical"
+      aria-label="调整编辑与预览的宽度比例"
+      aria-valuenow={Math.round(ratio * 100)}
+      aria-valuemin={22}
+      aria-valuemax={72}
       className={cn(
         'group relative z-10 w-px shrink-0 cursor-col-resize bg-border transition-colors hover:bg-primary/60',
-        dragging.current && 'bg-primary'
+        dragging && 'bg-primary'
       )}
       onMouseDown={(e) => {
         e.preventDefault()
-        dragging.current = true
+        draggingRef.current = true
+        setDragging(true)
         document.body.style.cursor = 'col-resize'
         document.body.style.userSelect = 'none'
       }}
@@ -62,7 +71,7 @@ export function Resizer({ onResize, ratio }: ResizerProps) {
       <span
         className={cn(
           'absolute left-1/2 top-1/2 flex h-8 w-3.5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border bg-background opacity-0 transition-opacity group-hover:opacity-100',
-          dragging.current && 'opacity-100'
+          dragging && 'opacity-100'
         )}
       >
         <span className="h-3 w-0.5 rounded-full bg-muted-foreground/50" style={{ transform: `scaleX(${ratio})` }} />

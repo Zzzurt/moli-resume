@@ -766,7 +766,7 @@ export const TiptapEditor = forwardRef<EditorHandle, TiptapEditorProps>(function
           {pageMetrics &&
             (pageMetrics.pageCount > 1 ? (
               <span
-                className="truncate text-xs font-medium text-amber-600 dark:text-amber-400"
+                className="truncate text-xs font-medium text-warning"
                 title={
                   pageMetrics.smartOnePage
                     ? '内容较多，已保留多页排版：可精简内容，或关闭「智能一页」手动调整'

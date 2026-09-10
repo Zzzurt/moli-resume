@@ -23,18 +23,39 @@ export interface AIConfig {
   model: string
 }
 
-/** 校验配置是否可用（用于 UI 提示，不抛异常） */
-export function validateAIConfig(config: AIConfig): { ok: boolean; message?: string } {
+/** 校验配置是否可用（用于 UI 提示，不抛异常）。失败时给出对应错误码，便于上层区分文案 */
+export function validateAIConfig(config: AIConfig): {
+  ok: boolean
+  message?: string
+  code?: 'NO_KEY' | 'BAD_URL'
+} {
   if (!config.apiKey.trim()) {
-    return { ok: false, message: '尚未配置 API Key，请前往设置页填写' }
+    return { ok: false, message: '尚未配置 API Key，请前往设置页填写', code: 'NO_KEY' }
   }
   try {
-    new URL(config.baseUrl.trim())
+    const url = new URL(config.baseUrl.trim())
+    // 只接受 http(s)：其他协议（data:/javascript: 等）无法用于 fetch，
+    // 而 http 会把 API Key 明文发出去，必须显式拦下（本机调试地址除外）
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return { ok: false, message: 'Base URL 必须是 http(s) 地址', code: 'BAD_URL' }
+    }
+    const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1'
+    if (url.protocol === 'http:' && !isLocal) {
+      return {
+        ok: false,
+        message: 'Base URL 是 http 明文地址：API Key 会被明文发送，请改用 https（本机调试地址除外）',
+        code: 'BAD_URL',
+      }
+    }
   } catch {
-    return { ok: false, message: 'Base URL 格式不正确，示例：https://dashscope.aliyuncs.com/compatible-mode/v1' }
+    return {
+      ok: false,
+      message: 'Base URL 格式不正确，示例：https://dashscope.aliyuncs.com/compatible-mode/v1',
+      code: 'BAD_URL',
+    }
   }
   if (!config.model.trim()) {
-    return { ok: false, message: '未指定模型名称' }
+    return { ok: false, message: '未指定模型名称', code: 'BAD_URL' }
   }
   return { ok: true }
 }
@@ -64,7 +85,7 @@ export async function chatCompletion(
   options: ChatOptions = {}
 ): Promise<string> {
   const check = validateAIConfig(config)
-  if (!check.ok) throw aiError('NO_KEY', check.message!)
+  if (!check.ok) throw aiError(check.code ?? 'NO_KEY', check.message!)
 
   let url: string
   try {
@@ -244,14 +265,26 @@ export async function chatCompletion(
         }
         throw aiError('ABORTED', '已停止生成')
       }
-      if (content) {
-        // 中断时保留已生成的部分，避免整段作废
+      /* 超时中断：只有「允许保留半成品」的文本改写类能力才能拿残文。
+         结构化 JSON 能力（JD 分析 / 语法检查）拿到半截 JSON 只会解析失败，
+         报成「格式异常」会掩盖真实原因、也让用户失去重试的入口 */
+      if (content && options.keepPartialOnAbort) {
         options.onDelta?.(content)
         return content
       }
-      throw aiError('NETWORK', '模型响应中断：长时间没有新内容，请重试')
+      throw aiError(
+        'NETWORK',
+        content
+          ? `模型响应中断（已收到 ${content.length} 字，片段不完整无法使用），请重试`
+          : '模型响应中断：长时间没有新内容，请重试'
+      )
     }
     throw e
+  } finally {
+    /* 命中 [DONE] 后我们会提前 break，此时响应体还没读完：
+       必须主动 cancel，否则连接一直挂着。高频 AI 调用会占满浏览器
+       同源连接池（通常 6 条），后续请求全被排队 */
+    void reader.cancel().catch(() => {})
   }
   disarm()
   if (!sawData) {
@@ -508,12 +541,8 @@ function parseSuggestions(raw: string, source: string): GrammarSuggestion[] {
     .filter((s) => source.includes(s.original)) // 过滤幻觉片段
 }
 
-/** 提取 AI 错误的可读文案 */
+/** 提取 AI 错误的可读文案（各类错误在抛出时都带了面向用户的中文说明） */
 export function aiErrorMessage(e: unknown): string {
-  if (e instanceof Error && 'code' in e) {
-    const err = e as AIError
-    if (err.code === 'NO_KEY') return err.message
-  }
   return e instanceof Error ? e.message : 'AI 调用失败，请重试'
 }
 

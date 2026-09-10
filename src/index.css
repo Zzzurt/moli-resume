@@ -23,6 +23,13 @@
     --accent-foreground: 173 62% 20%;
     --destructive: 0 72% 46%;
     --destructive-foreground: 0 0% 100%;
+    /* 语义化状态色：此前散落在组件里的 emerald/amber 硬编码色值统一收拢到这里，
+       深浅色各一套，组件侧只用 text-success / bg-warning/15 这类语义类 */
+    --success: 158 62% 30%;
+    --warning: 32 92% 40%;
+    /* 行级 diff 的“重色墨”：浅色淡底上的深色文字（深色模式反过来是浅色文字） */
+    --diff-add-fg: 158 68% 19%;
+    --diff-del-fg: 0 68% 30%;
     --border: 40 8% 88%;
     --input: 40 8% 84%;
     --ring: 173 62% 32%;
@@ -46,6 +53,10 @@
     --accent-foreground: 172 48% 66%;
     --destructive: 0 62% 52%;
     --destructive-foreground: 0 0% 100%;
+    --success: 158 58% 62%;
+    --warning: 38 92% 62%;
+    --diff-add-fg: 158 66% 84%;
+    --diff-del-fg: 0 78% 84%;
     --border: 200 10% 18%;
     --input: 200 10% 22%;
     --ring: 172 48% 45%;

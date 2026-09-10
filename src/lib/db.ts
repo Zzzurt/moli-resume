@@ -141,13 +141,19 @@ export interface BackupFile {
   version: 1
   exportedAt: number
   resumes: Resume[]
-  /** 备份不含 aiApiKey（避免明文密钥随文件外泄）；恢复时保留本机现有 Key */
+  /** 备份不含任何 API Key（顶层 aiApiKey 与配置档内的密钥都在导出时清空）；恢复时保留本机现有 Key */
   settings: Omit<AppSettings, 'aiApiKey'>
 }
 
 export async function exportBackup(): Promise<BackupFile> {
   const [resumes, settings] = await Promise.all([db.resumes.toArray(), loadSettings()])
-  const { aiApiKey: _omit, ...safeSettings } = settings
+  const { aiApiKey: _omit, ...rest } = settings
+  /* 配置档（AiProfile）里也存着 apiKey：只剥顶层字段会让密钥明文进备份文件，
+     而 UI 明确承诺「不含 API Key」——这里把档内密钥一并清空 */
+  const safeSettings: Omit<AppSettings, 'aiApiKey'> = {
+    ...rest,
+    aiProfiles: (settings.aiProfiles ?? []).map((p) => ({ ...p, apiKey: '' })),
+  }
   return {
     app: 'ink-resume',
     version: 1,
@@ -177,21 +183,65 @@ function sanitizeResume(r: Resume, now: number): Resume {
   }
 }
 
+/**
+ * 恢复前消毒设置项：备份是外部 JSON，不能原样写进库。
+ * - 白名单 + 取值校验：layout / accentColor / paperTone 等会参与 className 或内联样式拼接，
+ *   `theme` 又直接决定 <html> 类名，未校验的值可以往 DOM 上注入任意字符串
+ * - 永不接受任何密钥：顶层 aiApiKey 与配置档内的 apiKey 一律丢弃（本机 Key 保留不动）
+ */
+function sanitizeSettings(input: unknown): { key: string; value: unknown }[] {
+  if (!input || typeof input !== 'object') return []
+  const s = input as Partial<AppSettings>
+  const entries: { key: string; value: unknown }[] = []
+  const set = (key: string, value: unknown) => {
+    entries.push({ key, value })
+  }
+
+  if (s.theme === 'light' || s.theme === 'dark') set('theme', s.theme)
+  if (typeof s.aiBaseUrl === 'string' && /^https?:\/\//i.test(s.aiBaseUrl.trim())) {
+    set('aiBaseUrl', s.aiBaseUrl.trim())
+  }
+  if (typeof s.aiModel === 'string') set('aiModel', s.aiModel)
+  if (typeof s.splitRatio === 'number' && s.splitRatio > 0 && s.splitRatio < 1) {
+    set('splitRatio', s.splitRatio)
+  }
+  if (typeof s.smartOnePage === 'boolean') set('smartOnePage', s.smartOnePage)
+  if (s.layout === 'standard' || s.layout === 'compact' || s.layout === 'loose') {
+    set('layout', s.layout)
+  }
+  if (s.paperTone === 'white' || s.paperTone === 'dim' || s.paperTone === 'warm') {
+    set('paperTone', s.paperTone)
+  }
+  if (typeof s.accentColor === 'string' && /^#[0-9a-f]{3,8}$/i.test(s.accentColor.trim())) {
+    set('accentColor', s.accentColor.trim())
+  }
+  /* 配置档：保留名称 / 地址 / 模型，密钥一律清空（导出时也已清空） */
+  if (Array.isArray(s.aiProfiles)) {
+    const profiles = s.aiProfiles
+      .filter((p) => !!p && typeof p.id === 'string' && typeof p.name === 'string')
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        baseUrl: typeof p.baseUrl === 'string' ? p.baseUrl : '',
+        model: typeof p.model === 'string' ? p.model : '',
+        apiKey: '',
+      }))
+    if (profiles.length) set('aiProfiles', profiles)
+  }
+  return entries
+}
+
 /** 全量恢复：清空后写入（导入前应由 UI 层做二次确认）；API Key 不随备份恢复 */
 export async function importBackup(file: BackupFile): Promise<void> {
   if (!file || !Array.isArray(file.resumes)) {
     throw new Error('备份文件缺少简历数据')
   }
   const now = Date.now()
-  const settingsEntries = Object.entries(file.settings ?? {}).filter(
-    ([key]) => key !== 'aiApiKey'
-  )
+  const settingsEntries = sanitizeSettings(file.settings)
   await db.transaction('rw', db.resumes, db.settings, async () => {
     await db.resumes.clear()
     await db.settings.clear()
     await db.resumes.bulkAdd(file.resumes.map((r) => sanitizeResume(r, now)))
-    await db.settings.bulkPut(
-      settingsEntries.map(([key, value]) => ({ key, value }))
-    )
+    await db.settings.bulkPut(settingsEntries)
   })
 }

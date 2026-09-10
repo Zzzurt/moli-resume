@@ -65,14 +65,23 @@ export function GrammarDialog({ open, onOpenChange, markdown, onApply }: Grammar
     }
   }, [markdown, settings])
 
+  /* 只在弹窗打开时跑一次。不能把 run 放进依赖：它依赖 settings 对象，
+     而任何设置变更都会换掉该对象引用 → 弹窗开着时一次无关更新就会重跑一次
+     付费的 AI 请求（PolishDialog 用的也是 [open] 这一套） */
   useEffect(() => {
     if (open) void run()
-  }, [open, run])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
+  /**
+   * 应用单条建议。
+   * 注：按文本首次出现定位。若同一片段在原文出现多次，替换的是第一处，
+   * 可能与 AI 所指的那处不同（片段重复时建议重新检查确认）。
+   */
   const applyOne = (i: number, s: GrammarSuggestion) => {
     const idx = currentMd.indexOf(s.original)
     if (idx === -1) {
-      toast.error('未能在原文中定位该片段')
+      toast.error('未能在原文中定位该片段（内容可能已变更），建议重新检查')
       return
     }
     const next = currentMd.slice(0, idx) + s.suggestion + currentMd.slice(idx + s.original.length)

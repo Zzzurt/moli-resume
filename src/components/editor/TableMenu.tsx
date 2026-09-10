@@ -54,16 +54,21 @@ export function TableMenu({ editor }: { editor: Editor }) {
       }
     }
 
+    /* blur 处理器必须具名：Tiptap 的 EventEmitter.off(event) 不传 handler 时会
+       delete callbacks[event]，把该 editor 上**所有** blur 监听一并解绑
+       （包括 TiptapEditor 用来隐藏悬浮工具栏的那个） */
+    const onBlur = () => setPos(null)
+
     update()
     editor.on('transaction', update)
     editor.on('selectionUpdate', update)
     editor.on('focus', update)
-    editor.on('blur', () => setPos(null))
+    editor.on('blur', onBlur)
     return () => {
       editor.off('transaction', update)
       editor.off('selectionUpdate', update)
       editor.off('focus', update)
-      editor.off('blur')
+      editor.off('blur', onBlur)
     }
   }, [editor])
 
